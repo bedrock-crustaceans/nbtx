@@ -1,3 +1,5 @@
+#![allow(const_item_mutation)] // We make use of constant mutation on purpose in this test.
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
