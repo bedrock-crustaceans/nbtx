@@ -1,4 +1,4 @@
-//! Implements NBT serialisation and deserialisation for three different integer encodings.
+//! Implements NBT serialisation and deserialization for three different integer encodings.
 
 pub use crate::de::{from_be_bytes, from_le_bytes, from_var_bytes, Deserializer};
 pub use crate::ser::{
