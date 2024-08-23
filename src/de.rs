@@ -96,7 +96,7 @@ where
 ///
 /// On success, the deserialised object and amount of bytes read from the buffer are returned.
 #[inline]
-fn from_bytes<'de, 're, F, R, T>(reader: &'re mut R) -> Result<T, NbtError>
+pub fn from_bytes<'de, 're, F, T, R>(reader: &'re mut R) -> Result<T, NbtError>
 where
     R: BinaryRead<'de>,
     T: Deserialize<'de>,
@@ -118,7 +118,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use mirai_nbt as nbt;
+/// # use bedrockrs_nbt as nbt;
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
 ///  struct Data {
@@ -131,8 +131,7 @@ where
 /// # let obuffer = nbt::to_le_bytes(&data).unwrap();
 /// # let mut buffer: &[u8] = obuffer.as_ref();
 ///
-///  let result = nbt::from_le_bytes(&mut buffer).unwrap();
-///  let data: Data = result.0;
+///  let data: Data = nbt::from_le_bytes(&mut buffer).unwrap();
 ///
 ///  println!("Got {data:?}!");
 /// # }
@@ -143,7 +142,7 @@ where
     R: BinaryRead<'de>,
     T: Deserialize<'de>,
 {
-    from_bytes::<LittleEndian, _, _>(reader)
+    from_bytes::<LittleEndian, T, R>(reader)
 }
 
 /// Reads a single object of type `T` from the given buffer.
@@ -156,7 +155,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use mirai_nbt as nbt;
+/// # use bedrockrs_nbt as nbt;
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
 ///  struct Data {
@@ -169,8 +168,7 @@ where
 /// # let owned_buffer = nbt::to_be_bytes(&data).unwrap();
 /// # let mut buffer = owned_buffer.as_slice();
 ///
-///  let result = nbt::from_be_bytes(&mut buffer).unwrap();
-///  let data: Data = result.0;
+///  let data: Data = nbt::from_be_bytes(&mut buffer).unwrap();
 ///
 ///  println!("Got {data:?}!");
 /// # }
@@ -181,7 +179,7 @@ where
     R: BinaryRead<'de>,
     T: Deserialize<'de>,
 {
-    from_bytes::<BigEndian, _, _>(reader)
+    from_bytes::<BigEndian, T, R>(reader)
 }
 
 /// Reads a single object of type `T` from the given buffer.
@@ -194,7 +192,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use mirai_nbt as nbt;
+/// # use bedrockrs_nbt as nbt;
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
 ///  struct Data {
@@ -207,8 +205,7 @@ where
 /// # let owned_buffer = nbt::to_var_bytes(&data).unwrap();
 /// # let mut buffer = owned_buffer.as_slice();
 ///
-///  let result = nbt::from_var_bytes(&mut buffer).unwrap();
-///  let data: Data = result.0;
+///  let data: Data = nbt::from_var_bytes(&mut buffer).unwrap();
 ///
 ///  println!("Got {data:?}!");
 /// # }
@@ -219,7 +216,7 @@ where
     R: BinaryRead<'data>,
     T: Deserialize<'data>,
 {
-    from_bytes::<Variable, _, _>(reader)
+    from_bytes::<Variable, T, R>(reader)
 }
 
 impl<'de, 're, 'a, F, R> de::Deserializer<'de> for &'a mut Deserializer<'re, 'de, F, R>

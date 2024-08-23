@@ -45,7 +45,74 @@ macro_rules! forward_unsupported_field {
 /// # Example
 ///
 /// ```rust
-/// # use mirai_nbt as nbt;
+/// # use bedrockrs_nbt as nbt;
+/// #
+/// # fn main() {
+///  #[derive(serde::Serialize, serde::Deserialize)]
+///  struct Data {
+///     value: String
+///  }
+///
+///  let data = Data { value: "Hello, World!".to_owned() };
+///  let encoded = nbt::to_be_bytes(&data).unwrap();
+/// # }
+/// ```
+pub fn to_bytes<E, T>(v: &T) -> Result<Vec<u8>, NbtError>
+where
+    T: ?Sized + Serialize,
+    E: VariantImpl,
+{
+    let mut ser = Serializer::<_, E>::new(Vec::new());
+    v.serialize(&mut ser)?;
+
+    Ok(ser.into_inner())
+}
+
+/// Serializes the given data in big endian format.
+///
+/// This is the format used by Minecraft: Java Edition.
+///
+/// See [`to_be_bytes_in`] for an alternative that serializes into the given writer, instead
+/// of producing a new one.
+///
+/// # Example
+///
+/// ```rust
+/// # use bedrockrs_nbt as nbt;
+/// #
+/// # fn main() {
+///  #[derive(serde::Serialize, serde::Deserialize)]
+///  struct Data {
+///     value: String
+///  }
+///
+///  let data = Data { value: "Hello, World!".to_owned() };
+///  let encoded = nbt::to_be_bytes(&data).unwrap();
+/// # }
+/// ```
+pub fn to_bytes_in<E, T, W>(writer: W, v: &T) -> Result<(), NbtError>
+where
+    W: BinaryWrite,
+    T: ?Sized + Serialize,
+    E: VariantImpl,
+{
+    let mut ser = Serializer::<_, E>::new(writer);
+    v.serialize(&mut ser)?;
+
+    Ok(())
+}
+
+/// Serializes the given data in big endian format.
+///
+/// This is the format used by Minecraft: Java Edition.
+///
+/// See [`to_be_bytes_in`] for an alternative that serializes into the given writer, instead
+/// of producing a new one.
+///
+/// # Example
+///
+/// ```rust
+/// # use bedrockrs_nbt as nbt;
 /// #
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
@@ -62,10 +129,7 @@ pub fn to_be_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
 where
     T: ?Sized + Serialize,
 {
-    let mut ser = Serializer::<_, BigEndian>::new(Vec::new());
-
-    v.serialize(&mut ser)?;
-    Ok(ser.into_inner())
+    to_bytes::<BigEndian, T>(v)
 }
 
 /// Serializes the given data in little endian format.
@@ -78,7 +142,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use mirai_nbt as nbt;
+/// # use bedrockrs_nbt as nbt;
 /// #
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
@@ -95,10 +159,7 @@ pub fn to_le_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
 where
     T: ?Sized + Serialize,
 {
-    let mut ser = Serializer::<_, LittleEndian>::new(Vec::new());
-
-    v.serialize(&mut ser)?;
-    Ok(ser.into_inner())
+    to_bytes::<LittleEndian, T>(v)
 }
 
 /// Serializes the given data in variable format.
@@ -111,7 +172,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use mirai_nbt as nbt;
+/// # use bedrockrs_nbt as nbt;
 /// #
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
@@ -128,10 +189,7 @@ pub fn to_var_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
 where
     T: ?Sized + Serialize,
 {
-    let mut ser = Serializer::<_, Variable>::new(Vec::new());
-
-    v.serialize(&mut ser)?;
-    Ok(ser.into_inner())
+    to_bytes::<Variable, T>(v)
 }
 
 /// Serializes the given data, into the given writer, in big endian format.
@@ -141,7 +199,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use mirai_nbt as nbt;
+/// # use bedrockrs_nbt as nbt;
 /// #
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
@@ -161,10 +219,7 @@ where
     T: ?Sized + Serialize,
     W: BinaryWrite,
 {
-    let mut ser = Serializer::<W, BigEndian>::new(w);
-    v.serialize(&mut ser)?;
-
-    Ok(())
+    to_bytes_in::<BigEndian, T, W>(w, v)
 }
 
 /// Serializes the given data, into the given writer, in little endian format.
@@ -174,7 +229,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use mirai_nbt as nbt;
+/// # use bedrockrs_nbt as nbt;
 /// #
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
@@ -194,10 +249,7 @@ where
     T: ?Sized + Serialize,
     W: BinaryWrite,
 {
-    let mut ser = Serializer::<W, LittleEndian>::new(w);
-    v.serialize(&mut ser)?;
-
-    Ok(())
+    to_bytes_in::<LittleEndian, T, W>(w, v)
 }
 
 /// Serializes the given data, into the given writer, in variable format.
@@ -207,7 +259,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use mirai_nbt as nbt;
+/// # use bedrockrs_nbt as nbt;
 /// #
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
@@ -222,15 +274,12 @@ where
 /// # }
 /// ```
 #[inline]
-pub fn to_var_bytes_in<W, T>(w: W, value: &T) -> Result<(), NbtError>
+pub fn to_var_bytes_in<W, T>(w: W, v: &T) -> Result<(), NbtError>
 where
     T: ?Sized + Serialize,
     W: BinaryWrite,
 {
-    let mut ser = Serializer::<W, Variable>::new(w);
-    value.serialize(&mut ser)?;
-
-    Ok(())
+    to_bytes_in::<Variable, T, W>(w, v)
 }
 
 /// NBT data serialiser.
