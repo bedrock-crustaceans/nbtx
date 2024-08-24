@@ -1,10 +1,7 @@
 //! Implements NBT serialisation and deserialisation for three different integer encodings.
 
 pub use crate::de::{from_be_bytes, from_le_bytes, from_var_bytes, Deserializer};
-pub use crate::ser::{
-    to_be_bytes, to_be_bytes_in, to_le_bytes, to_le_bytes_in, to_var_bytes, to_var_bytes_in,
-    Serializer,
-};
+pub use crate::ser::Serializer;
 pub use crate::value::Value;
 use std::borrow::Cow;
 use std::fmt::{Debug, Display};
@@ -14,28 +11,38 @@ pub use error::NbtError;
 #[cfg(test)]
 mod test;
 
-mod read;
-mod write;
-
 mod de;
 mod error;
 mod ser;
 mod value;
 
 mod private {
-    use crate::{BigEndian, LittleEndian, Variable};
+    use byteorder::{BigEndian, LittleEndian};
+
+    use crate::{EndiannessImpl, NetworkLittleEndian, Variant};
 
     /// Prevents [`VariantImpl`](super::VariantImpl) from being implemented for
     /// types outside of this crate.
     pub trait Sealed {}
 
-    impl Sealed for LittleEndian {}
     impl Sealed for BigEndian {}
-    impl Sealed for Variable {}
+    impl EndiannessImpl for BigEndian {
+        const AS_ENUM: Variant = Variant::BigEndian;
+    }
+
+    impl Sealed for LittleEndian {}
+    impl EndiannessImpl for LittleEndian {
+        const AS_ENUM: Variant = Variant::LittleEndian;
+    }
+
+    impl Sealed for NetworkLittleEndian {}
+    impl EndiannessImpl for NetworkLittleEndian {
+        const AS_ENUM: Variant = Variant::NetworkEndian;
+    }
 }
 
 /// Implemented by all NBT variants.
-pub trait VariantImpl: private::Sealed {
+pub trait EndiannessImpl: private::Sealed {
     /// Used to convert a variant to an enum.
     /// This is used to match generic types in order to prevent
     /// having to duplicate all deserialisation code three times.
@@ -55,34 +62,14 @@ pub enum Variant {
     /// This format is the same as [`LittleEndian`], except that type lengths
     /// (such as for strings or lists), are varints instead of shorts.
     /// The integer and long types are also varints.
-    Variable,
-}
-
-/// Used by Bedrock for data saved to disk.
-/// Every data type is written in little endian format.
-pub enum LittleEndian {}
-
-impl VariantImpl for LittleEndian {
-    const AS_ENUM: Variant = Variant::LittleEndian;
-}
-
-/// Used by Java.
-/// Every data types is written in big endian format.
-pub enum BigEndian {}
-
-impl VariantImpl for BigEndian {
-    const AS_ENUM: Variant = Variant::BigEndian;
+    NetworkEndian,
 }
 
 /// Used by Bedrock for NBT transferred over the network.
 /// This format is the same as [`LittleEndian`], except that type lengths
 /// (such as for strings or lists), are varints instead of shorts.
 /// The integer and long types are also varints.
-pub enum Variable {}
-
-impl VariantImpl for Variable {
-    const AS_ENUM: Variant = Variant::Variable;
-}
+pub enum NetworkLittleEndian {}
 
 /// NBT field type
 // Compiler complains about unused enum variants even though they're constructed using a transmute.
