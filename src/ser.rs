@@ -59,9 +59,8 @@ macro_rules! forward_unsupported_field {
 ///  let encoded = nbt::to_be_bytes(&data).unwrap();
 /// # }
 /// ```
-pub fn to_bytes<E, T>(v: &T) -> Result<Vec<u8>, NbtError>
+pub fn to_bytes<E>(v: &(impl Serialize + ?Sized)) -> Result<Vec<u8>, NbtError>
 where
-    T: ?Sized + Serialize,
     E: EndiannessImpl,
 {
     let mut ser = Serializer::<_, E>::new(Vec::new());
@@ -80,16 +79,16 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// #
 /// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize)]
+///  use byteorder::BigEndian;
+///
+/// #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
 ///     value: String
 ///  }
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbt::to_be_bytes(&data).unwrap();
+///  let encoded = nbtx::to_bytes::<BigEndian>(&data).unwrap();
 /// # }
 /// ```
 pub fn to_bytes_in<E, T, W>(writer: W, v: &T) -> Result<(), NbtError>
@@ -104,7 +103,7 @@ where
     Ok(())
 }
 
-/// NBT data serialiser.
+/// NBT data serializer.
 #[derive(Debug)]
 pub struct Serializer<W, E>
 where

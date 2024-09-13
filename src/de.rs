@@ -11,7 +11,7 @@ use varint_rs::VarintReader;
 use crate::error::StreamError;
 use crate::{EndiannessImpl, FieldType, NbtError, NetworkLittleEndian, Variant};
 
-/// Verifies that the deserialised type is equal to the expected type.
+/// Verifies that the deserialized type is equal to the expected type.
 macro_rules! is_ty {
     ($expected: ident, $actual: expr) => {
         if $actual != FieldType::$expected {
@@ -40,7 +40,7 @@ macro_rules! forward_unsupported {
     }
 }
 
-/// NBT deserialiser.
+/// NBT deserializer.
 #[derive(Debug)]
 pub struct Deserializer<'re, 'de, F, R>
 where
@@ -58,7 +58,7 @@ where
     R: ReadBytesExt + AsRef<[u8]>,
     F: EndiannessImpl + 'de,
 {
-    /// Creates a new deserialiser, consuming the reader.
+    /// Creates a new deserializer, consuming the reader.
     pub fn new(input: &'re mut Cursor<R>) -> Result<Self, NbtError> {
         let next_ty = FieldType::try_from(input.read_u8()?)?;
         if next_ty != FieldType::Compound && next_ty != FieldType::List {
@@ -123,6 +123,7 @@ where
 ///
 /// ```rust
 /// # use bedrockrs_nbt as nbt;
+///
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
 ///  struct Data {

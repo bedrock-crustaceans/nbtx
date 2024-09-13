@@ -1,7 +1,7 @@
 //! Implements NBT serialisation and deserialization for three different integer encodings.
 
 pub use crate::de::{from_be_bytes, from_le_bytes, from_var_bytes, Deserializer};
-pub use crate::ser::Serializer;
+pub use crate::ser::{to_bytes, to_bytes_in, Serializer};
 pub use crate::value::Value;
 use std::borrow::Cow;
 use std::fmt::{Debug, Display};
