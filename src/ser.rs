@@ -1,11 +1,13 @@
 use std::marker::PhantomData;
 
+use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
 use paste::paste;
 use serde::ser::{Impossible, SerializeMap, SerializeSeq, SerializeStruct, SerializeTuple};
 use serde::{ser, Serialize};
 
-use crate::write::BinaryWrite;
-use crate::{BigEndian, FieldType, LittleEndian, NbtError, Variable, Variant, VariantImpl};
+use varint_rs::VarintWriter;
+
+use crate::{EndiannessImpl, FieldType, NbtError, NetworkLittleEndian, Variant};
 
 /// Returns a `not supported` error.
 macro_rules! forward_unsupported {
@@ -60,7 +62,7 @@ macro_rules! forward_unsupported_field {
 pub fn to_bytes<E, T>(v: &T) -> Result<Vec<u8>, NbtError>
 where
     T: ?Sized + Serialize,
-    E: VariantImpl,
+    E: EndiannessImpl,
 {
     let mut ser = Serializer::<_, E>::new(Vec::new());
     v.serialize(&mut ser)?;
@@ -92,9 +94,9 @@ where
 /// ```
 pub fn to_bytes_in<E, T, W>(writer: W, v: &T) -> Result<(), NbtError>
 where
-    W: BinaryWrite,
+    W: WriteBytesExt,
     T: ?Sized + Serialize,
-    E: VariantImpl,
+    E: EndiannessImpl,
 {
     let mut ser = Serializer::<_, E>::new(writer);
     v.serialize(&mut ser)?;
@@ -102,192 +104,12 @@ where
     Ok(())
 }
 
-/// Serializes the given data in big endian format.
-///
-/// This is the format used by Minecraft: Java Edition.
-///
-/// See [`to_be_bytes_in`] for an alternative that serializes into the given writer, instead
-/// of producing a new one.
-///
-/// # Example
-///
-/// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// #
-/// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbt::to_be_bytes(&data).unwrap();
-/// # }
-/// ```
-#[inline]
-pub fn to_be_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
-where
-    T: ?Sized + Serialize,
-{
-    to_bytes::<BigEndian, T>(v)
-}
-
-/// Serializes the given data in little endian format.
-///
-/// This is the format used by disk formats in Minecraft: Bedrock Edition.
-///
-/// See [`to_le_bytes_in`] for an alternative that serializes into the given writer, instead
-/// of producing a new one.
-///
-/// # Example
-///
-/// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// #
-/// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbt::to_le_bytes(&data).unwrap();
-/// # }
-/// ```
-#[inline]
-pub fn to_le_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
-where
-    T: ?Sized + Serialize,
-{
-    to_bytes::<LittleEndian, T>(v)
-}
-
-/// Serializes the given data in variable format.
-///
-/// This is the format used by network formats in Minecraft: Bedrock Edition.
-///
-/// See [`to_var_bytes_in`] for an alternative that serializes into the given writer, instead
-/// of producing a new one.
-///
-/// # Example
-///
-/// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// #
-/// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbt::to_var_bytes(&data).unwrap();
-/// # }
-/// ```
-#[inline]
-pub fn to_var_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
-where
-    T: ?Sized + Serialize,
-{
-    to_bytes::<Variable, T>(v)
-}
-
-/// Serializes the given data, into the given writer, in big endian format.
-///
-/// This is the format used by Minecraft: Java Edition.
-///
-/// # Example
-///
-/// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// #
-/// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let mut writer = Vec::new();
-///
-///  nbt::to_be_bytes_in(&mut writer, &data).unwrap();
-/// # }
-/// ```
-#[inline]
-pub fn to_be_bytes_in<W, T>(w: W, v: &T) -> Result<(), NbtError>
-where
-    T: ?Sized + Serialize,
-    W: BinaryWrite,
-{
-    to_bytes_in::<BigEndian, T, W>(w, v)
-}
-
-/// Serializes the given data, into the given writer, in little endian format.
-///
-/// This is the format used by disk formats in Minecraft: Bedrock Edition.
-///
-/// # Example
-///
-/// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// #
-/// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let mut writer = Vec::new();
-///
-///  nbt::to_le_bytes_in(&mut writer, &data).unwrap();
-/// # }
-/// ```
-#[inline]
-pub fn to_le_bytes_in<W, T>(w: W, v: &T) -> Result<(), NbtError>
-where
-    T: ?Sized + Serialize,
-    W: BinaryWrite,
-{
-    to_bytes_in::<LittleEndian, T, W>(w, v)
-}
-
-/// Serializes the given data, into the given writer, in variable format.
-///
-/// This is the format used by network formats in Minecraft: Bedrock Edition.
-///
-/// # Example
-///
-/// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// #
-/// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let mut writer = Vec::new();
-///
-///  nbt::to_var_bytes_in(&mut writer, &data).unwrap();
-/// # }
-/// ```
-#[inline]
-pub fn to_var_bytes_in<W, T>(w: W, v: &T) -> Result<(), NbtError>
-where
-    T: ?Sized + Serialize,
-    W: BinaryWrite,
-{
-    to_bytes_in::<Variable, T, W>(w, v)
-}
-
 /// NBT data serialiser.
 #[derive(Debug)]
-pub struct Serializer<W, F>
+pub struct Serializer<W, E>
 where
-    W: BinaryWrite,
-    F: VariantImpl,
+    W: WriteBytesExt,
+    E: EndiannessImpl,
 {
     writer: W,
     /// Whether this is the first data to be written.
@@ -295,17 +117,17 @@ where
     is_initial: bool,
     /// Stores the length of the list that is currently being serialised.
     len: usize,
-    _marker: PhantomData<F>,
+    _marker: PhantomData<E>,
 }
 
-impl<W, M> Serializer<W, M>
+impl<W, E> Serializer<W, E>
 where
-    W: BinaryWrite,
-    M: VariantImpl,
+    W: WriteBytesExt,
+    E: EndiannessImpl,
 {
     /// Creates a new and empty serialiser.
     #[inline]
-    pub const fn new(w: W) -> Serializer<W, M> {
+    pub const fn new(w: W) -> Serializer<W, E> {
         Serializer {
             writer: w,
             is_initial: true,
@@ -321,10 +143,10 @@ where
     }
 }
 
-impl<'a, W, M> ser::Serializer for &'a mut Serializer<W, M>
+impl<'a, W, E> ser::Serializer for &'a mut Serializer<W, E>
 where
-    M: VariantImpl,
-    W: BinaryWrite,
+    E: EndiannessImpl,
+    W: WriteBytesExt,
 {
     type Ok = ();
     type Error = NbtError;
@@ -341,7 +163,7 @@ where
 
     #[inline]
     fn serialize_bool(self, v: bool) -> Result<(), NbtError> {
-        self.writer.write_bool(v)?;
+        self.writer.write_u8(v as u8)?;
         Ok(())
     }
 
@@ -353,9 +175,11 @@ where
 
     #[inline]
     fn serialize_i16(self, v: i16) -> Result<(), NbtError> {
-        match M::AS_ENUM {
-            Variant::BigEndian => self.writer.write_i16_be(v)?,
-            Variant::LittleEndian | Variant::Variable => self.writer.write_i16_le(v)?,
+        match E::AS_ENUM {
+            Variant::BigEndian => self.writer.write_i16::<BigEndian>(v)?,
+            Variant::LittleEndian | Variant::NetworkEndian => {
+                self.writer.write_i16::<LittleEndian>(v)?
+            }
         };
 
         Ok(())
@@ -363,10 +187,10 @@ where
 
     #[inline]
     fn serialize_i32(self, v: i32) -> Result<(), NbtError> {
-        match M::AS_ENUM {
-            Variant::BigEndian => self.writer.write_i32_be(v)?,
-            Variant::LittleEndian => self.writer.write_i32_le(v)?,
-            Variant::Variable => self.writer.write_var_i32(v)?,
+        match E::AS_ENUM {
+            Variant::BigEndian => self.writer.write_i32::<BigEndian>(v)?,
+            Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(v)?,
+            Variant::NetworkEndian => self.writer.write_i32_varint(v)?,
         };
 
         Ok(())
@@ -374,10 +198,10 @@ where
 
     #[inline]
     fn serialize_i64(self, v: i64) -> Result<(), NbtError> {
-        match M::AS_ENUM {
-            Variant::BigEndian => self.writer.write_i64_be(v)?,
-            Variant::LittleEndian => self.writer.write_i64_le(v)?,
-            Variant::Variable => self.writer.write_var_i64(v)?,
+        match E::AS_ENUM {
+            Variant::BigEndian => self.writer.write_i64::<BigEndian>(v)?,
+            Variant::LittleEndian => self.writer.write_i64::<LittleEndian>(v)?,
+            Variant::NetworkEndian => self.writer.write_i64_varint(v)?,
         };
 
         Ok(())
@@ -385,9 +209,11 @@ where
 
     #[inline]
     fn serialize_f32(self, v: f32) -> Result<(), NbtError> {
-        match M::AS_ENUM {
-            Variant::BigEndian => self.writer.write_f32_be(v)?,
-            Variant::LittleEndian | Variant::Variable => self.writer.write_f32_le(v)?,
+        match E::AS_ENUM {
+            Variant::BigEndian => self.writer.write_f32::<BigEndian>(v)?,
+            Variant::LittleEndian | Variant::NetworkEndian => {
+                self.writer.write_f32::<LittleEndian>(v)?
+            }
         };
 
         Ok(())
@@ -395,9 +221,11 @@ where
 
     #[inline]
     fn serialize_f64(self, v: f64) -> Result<(), NbtError> {
-        match M::AS_ENUM {
-            Variant::BigEndian => self.writer.write_f64_be(v)?,
-            Variant::LittleEndian | Variant::Variable => self.writer.write_f64_le(v)?,
+        match E::AS_ENUM {
+            Variant::BigEndian => self.writer.write_f64::<BigEndian>(v)?,
+            Variant::LittleEndian | Variant::NetworkEndian => {
+                self.writer.write_f64::<LittleEndian>(v)?
+            }
         };
 
         Ok(())
@@ -405,10 +233,10 @@ where
 
     #[inline]
     fn serialize_str(self, v: &str) -> Result<(), NbtError> {
-        match M::AS_ENUM {
-            Variant::BigEndian => self.writer.write_u16_be(v.len() as u16),
-            Variant::LittleEndian => self.writer.write_u16_le(v.len() as u16),
-            Variant::Variable => self.writer.write_var_u32(v.len() as u32),
+        match E::AS_ENUM {
+            Variant::BigEndian => self.writer.write_u16::<BigEndian>(v.len() as u16),
+            Variant::LittleEndian => self.writer.write_u16::<LittleEndian>(v.len() as u16),
+            Variant::NetworkEndian => self.writer.write_u32_varint(v.len() as u32),
         }?;
 
         self.writer.write_all(v.as_bytes())?;
@@ -417,10 +245,10 @@ where
 
     #[inline]
     fn serialize_bytes(self, v: &[u8]) -> Result<(), NbtError> {
-        match M::AS_ENUM {
-            Variant::BigEndian => self.writer.write_i32_be(v.len() as i32),
-            Variant::LittleEndian => self.writer.write_i32_le(v.len() as i32),
-            Variant::Variable => self.writer.write_var_i32(v.len() as i32),
+        match E::AS_ENUM {
+            Variant::BigEndian => self.writer.write_i32::<BigEndian>(v.len() as i32),
+            Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(v.len() as i32),
+            Variant::NetworkEndian => self.writer.write_i32_varint(v.len() as i32),
         }?;
 
         self.writer.write_all(v)?;
@@ -557,8 +385,8 @@ where
 
 impl<'a, W, F> SerializeSeq for &'a mut Serializer<W, F>
 where
-    W: BinaryWrite,
-    F: VariantImpl,
+    W: WriteBytesExt,
+    F: EndiannessImpl,
 {
     type Ok = ();
     type Error = NbtError;
@@ -573,9 +401,9 @@ where
             element.serialize(ty_serializer)?;
 
             match F::AS_ENUM {
-                Variant::BigEndian => self.writer.write_i32_be(self.len as i32),
-                Variant::LittleEndian => self.writer.write_i32_le(self.len as i32),
-                Variant::Variable => self.writer.write_var_i32(self.len as i32),
+                Variant::BigEndian => self.writer.write_i32::<BigEndian>(self.len as i32),
+                Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(self.len as i32),
+                Variant::NetworkEndian => self.writer.write_i32_varint(self.len as i32),
             }?;
             self.len = 0;
         }
@@ -591,8 +419,8 @@ where
 
 impl<'a, W, M> SerializeTuple for &'a mut Serializer<W, M>
 where
-    W: BinaryWrite,
-    M: VariantImpl,
+    W: WriteBytesExt,
+    M: EndiannessImpl,
 {
     type Ok = ();
     type Error = NbtError;
@@ -607,9 +435,9 @@ where
             element.serialize(ty_serializer)?;
 
             match M::AS_ENUM {
-                Variant::BigEndian => self.writer.write_i32_be(self.len as i32),
-                Variant::LittleEndian => self.writer.write_i32_le(self.len as i32),
-                Variant::Variable => self.writer.write_var_i32(self.len as i32),
+                Variant::BigEndian => self.writer.write_i32::<BigEndian>(self.len as i32),
+                Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(self.len as i32),
+                Variant::NetworkEndian => self.writer.write_i32_varint(self.len as i32),
             }?;
             self.len = 0;
         }
@@ -625,8 +453,8 @@ where
 
 impl<'a, W, M> SerializeMap for &'a mut Serializer<W, M>
 where
-    W: BinaryWrite,
-    M: VariantImpl,
+    W: WriteBytesExt,
+    M: EndiannessImpl,
 {
     type Ok = ();
     type Error = NbtError;
@@ -672,8 +500,8 @@ where
 
 impl<'a, W, M> SerializeStruct for &'a mut Serializer<W, M>
 where
-    W: BinaryWrite,
-    M: VariantImpl,
+    W: WriteBytesExt,
+    M: EndiannessImpl,
 {
     type Ok = ();
     type Error = NbtError;
@@ -687,9 +515,9 @@ where
 
         if !should_skip {
             match M::AS_ENUM {
-                Variant::LittleEndian => self.writer.write_u16_le(key.len() as u16),
-                Variant::BigEndian => self.writer.write_u16_be(key.len() as u16),
-                Variant::Variable => self.writer.write_var_u32(key.len() as u32),
+                Variant::LittleEndian => self.writer.write_u16::<LittleEndian>(key.len() as u16),
+                Variant::BigEndian => self.writer.write_u16::<BigEndian>(key.len() as u16),
+                Variant::NetworkEndian => self.writer.write_u32_varint(key.len() as u32),
             }?;
 
             self.writer.write_all(key.as_bytes())?;
@@ -713,16 +541,16 @@ where
 /// This serialiser writes the data type of the given value and does not consume it.
 struct FieldTypeSerializer<'a, W, F>
 where
-    W: BinaryWrite,
-    F: VariantImpl,
+    W: WriteBytesExt,
+    F: EndiannessImpl,
 {
     ser: &'a mut Serializer<W, F>,
 }
 
 impl<'a, W, F> FieldTypeSerializer<'a, W, F>
 where
-    W: BinaryWrite,
-    F: VariantImpl,
+    W: WriteBytesExt,
+    F: EndiannessImpl,
 {
     pub fn new(ser: &'a mut Serializer<W, F>) -> Self {
         Self { ser }
@@ -731,8 +559,8 @@ where
 
 impl<'a, W, F> ser::Serializer for FieldTypeSerializer<'a, W, F>
 where
-    W: BinaryWrite,
-    F: VariantImpl,
+    W: WriteBytesExt,
+    F: EndiannessImpl,
 {
     type Ok = bool; // Whether the field should be skipped
     type Error = NbtError;
@@ -909,8 +737,8 @@ where
 
 impl<'a, W, F> SerializeSeq for FieldTypeSerializer<'a, W, F>
 where
-    W: BinaryWrite,
-    F: VariantImpl,
+    W: WriteBytesExt,
+    F: EndiannessImpl,
 {
     type Ok = bool;
     type Error = NbtError;
@@ -931,8 +759,8 @@ where
 
 impl<'a, W, F> SerializeTuple for FieldTypeSerializer<'a, W, F>
 where
-    W: BinaryWrite,
-    F: VariantImpl,
+    W: WriteBytesExt,
+    F: EndiannessImpl,
 {
     type Ok = bool;
     type Error = NbtError;
@@ -953,8 +781,8 @@ where
 
 impl<'a, W, F> SerializeMap for FieldTypeSerializer<'a, W, F>
 where
-    W: BinaryWrite,
-    F: VariantImpl,
+    W: WriteBytesExt,
+    F: EndiannessImpl,
 {
     type Ok = bool;
     type Error = NbtError;
@@ -983,8 +811,8 @@ where
 
 impl<'a, W, F> SerializeStruct for FieldTypeSerializer<'a, W, F>
 where
-    W: BinaryWrite,
-    F: VariantImpl,
+    W: WriteBytesExt,
+    F: EndiannessImpl,
 {
     type Ok = bool;
     type Error = NbtError;

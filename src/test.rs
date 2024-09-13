@@ -1,11 +1,12 @@
 #![allow(const_item_mutation)] // We make use of constant mutation on purpose in this test.
 
 use std::collections::HashMap;
+use std::io::Cursor;
 
+use byteorder::BigEndian;
 use serde::{Deserialize, Serialize};
 
-use crate::ser::to_be_bytes;
-use crate::{from_be_bytes, from_le_bytes, from_var_bytes, to_le_bytes, to_var_bytes, Value};
+use crate::{de::from_bytes, from_be_bytes, from_le_bytes, from_var_bytes, ser::to_bytes, Value};
 
 const BIG_TEST_NBT: &[u8] = include_bytes!("../test/bigtest.nbt");
 const HELLO_WORLD_NBT: &[u8] = include_bytes!("../test/hello_world.nbt");
@@ -24,10 +25,10 @@ fn read_write_option() {
         required: "This is Some".to_owned(),
     };
 
-    let some_ser = to_be_bytes(&some).unwrap();
-    let mut some_ser_slice = some_ser.as_slice();
+    let some_ser = to_bytes::<BigEndian>(&some).unwrap();
+    let mut some_ser_slice = Cursor::new(some_ser.as_slice());
 
-    let some_de: Value = from_be_bytes(&mut some_ser_slice).unwrap();
+    let some_de: Value = from_bytes::<BigEndian>(&mut some_ser_slice).unwrap();
     dbg!(some_de);
 
     let _none = Optional {
