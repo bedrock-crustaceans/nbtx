@@ -37,11 +37,9 @@ macro_rules! forward_unsupported_field {
     }
 }
 
-/// Serializes the given data in big endian format.
+/// Serializes the given data in any endian format.
 ///
-/// This is the format used by Minecraft: Java Edition.
-///
-/// See [`to_be_bytes_in`] for an alternative that serializes into the given writer, instead
+/// See [`to_bytes_in`] for an alternative that serializes into the given writer, instead
 /// of producing a new one.
 ///
 /// # Example
@@ -67,6 +65,95 @@ where
     Ok(ser.into_inner())
 }
 
+/// Serializes the given data in any endian format.
+///
+/// See [`to_bytes`] for an alternative just returns a new buffer, instead of using an existing writer.
+///
+/// # Example
+///
+/// ```rust
+/// # use std::io::Cursor;
+/// # fn main() {
+/// #[derive(serde::Serialize, serde::Deserialize)]
+///  struct Data {
+///     value: String
+///  }
+///
+///  let data = Data { value: "Hello, World!".to_owned() };
+///  let mut writer = Cursor::new(Vec::new());
+/// 
+///  nbtx::to_bytes_in::<nbtx::BigEndian>(&mut writer, &data).unwrap();
+/// # }
+/// ```
+pub fn to_bytes_in<E>(writer: impl WriteBytesExt, v: &(impl Serialize + ?Sized)) -> Result<(), NbtError>
+where
+    E: EndiannessImpl,
+{
+    let mut ser = Serializer::<_, E>::new(writer);
+    v.serialize(&mut ser)?;
+
+    Ok(())
+}
+
+/// Serializes the given data in network little endian format.
+///
+/// This is the format used by Minecraft: Bedrock Edition.
+///
+/// See [`to_net_bytes_in`] for an alternative that serializes into the given writer, instead
+/// of producing a new one.
+///
+/// # Example
+///
+/// ```rust
+/// # fn main() {
+/// #[derive(serde::Serialize, serde::Deserialize)]
+///  struct Data {
+///     value: String
+///  }
+///
+///  let data = Data { value: "Hello, World!".to_owned() };
+///  let encoded = nbtx::to_net_bytes(&data).unwrap();
+/// # }
+/// ```
+#[inline]
+pub fn to_net_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
+where
+    T: ?Sized + Serialize,
+{
+    to_bytes::<NetworkLittleEndian>(v)
+}
+
+/// Serializes the given data in network little endian format.
+///
+/// This is the format used by Minecraft: Bedrock Edition.
+///
+/// See [`to_net_bytes`] for an alternative just returns a new buffer, instead of using an existing writer.
+///
+/// # Example
+///
+/// ```rust
+/// # use std::io::Cursor;
+/// # fn main() {
+///  #[derive(serde::Serialize, serde::Deserialize)]
+///  struct Data {
+///     value: String
+///  }
+///
+///  let data = Data { value: "Hello, World!".to_owned() };
+///  let mut writer = Cursor::new(Vec::new());
+/// 
+///  let encoded = nbtx::to_net_bytes_in(&mut writer, &data).unwrap();
+/// # }
+/// ```
+#[inline]
+pub fn to_net_bytes_in<T, W>(writer: W, v: &T) -> Result<(), NbtError>
+where
+    W: WriteBytesExt,
+    T: ?Sized + Serialize,
+{
+    to_bytes_in::<NetworkLittleEndian>(writer, v)
+}
+
 /// Serializes the given data in big endian format.
 ///
 /// This is the format used by Minecraft: Java Edition.
@@ -84,36 +171,9 @@ where
 ///  }
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbtx::to_bytes::<nbtx::BigEndian>(&data).unwrap();
+///  let encoded = nbtx::to_be_bytes(&data).unwrap();
 /// # }
 /// ```
-pub fn to_bytes_in<E>(writer: impl WriteBytesExt, v: &(impl Serialize + ?Sized)) -> Result<(), NbtError>
-where
-    E: EndiannessImpl,
-{
-    let mut ser = Serializer::<_, E>::new(writer);
-    v.serialize(&mut ser)?;
-
-    Ok(())
-}
-
-#[inline]
-pub fn to_net_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
-where
-    T: ?Sized + Serialize,
-{
-    to_bytes::<NetworkLittleEndian>(v)
-}
-
-#[inline]
-pub fn to_net_bytes_in<T, W>(writer: W, v: &T) -> Result<(), NbtError>
-where
-    W: WriteBytesExt,
-    T: ?Sized + Serialize,
-{
-    to_bytes_in::<NetworkLittleEndian>(writer, v)
-}
-
 #[inline]
 pub fn to_be_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
 where
@@ -122,6 +182,28 @@ where
     to_bytes::<BigEndian>(v)
 }
 
+/// Serializes the given data in big endian format.
+///
+/// This is the format used by Minecraft: Java Edition.
+///
+/// See [`to_be_bytes`] for an alternative just returns a new buffer, instead of using an existing writer.
+///
+/// # Example
+///
+/// ```rust
+/// # use std::io::Cursor;
+/// # fn main() {
+///  #[derive(serde::Serialize, serde::Deserialize)]
+///  struct Data {
+///     value: String
+///  }
+///
+///  let data = Data { value: "Hello, World!".to_owned() };
+///  let mut writer = Cursor::new(Vec::new());
+/// 
+///  let encoded = nbtx::to_be_bytes_in(&mut writer, &data).unwrap();
+/// # }
+/// ```
 #[inline]
 pub fn to_be_bytes_in<T, W>(writer: W, v: &T) -> Result<(), NbtError>
 where
@@ -131,6 +213,26 @@ where
     to_bytes_in::<BigEndian>(writer, v)
 }
 
+/// Serializes the given data in little endian format.
+///
+/// This is the format used by Minecraft: Bedrock Edition.
+///
+/// See [`to_be_bytes_in`] for an alternative that serializes into the given writer, instead
+/// of producing a new one.
+///
+/// # Example
+///
+/// ```rust
+/// # fn main() {
+/// #[derive(serde::Serialize, serde::Deserialize)]
+///  struct Data {
+///     value: String
+///  }
+///
+///  let data = Data { value: "Hello, World!".to_owned() };
+///  let encoded = nbtx::to_le_bytes(&data).unwrap();
+/// # }
+/// ```
 #[inline]
 pub fn to_le_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
 where
@@ -139,6 +241,28 @@ where
     to_bytes::<LittleEndian>(v)
 }
 
+/// Serializes the given data in little endian format.
+///
+/// This is the format used by Minecraft: Bedrock Edition.
+///
+/// See [`to_le_bytes_in`] for an alternative just returns a new buffer, instead of using an existing writer.
+///
+/// # Example
+///
+/// ```rust
+/// # use std::io::Cursor;
+/// # fn main() {
+///  #[derive(serde::Serialize, serde::Deserialize)]
+///  struct Data {
+///     value: String
+///  }
+///
+///  let data = Data { value: "Hello, World!".to_owned() };
+///  let mut writer = Cursor::new(Vec::new());
+/// 
+///  let encoded = nbtx::to_le_bytes_in(&mut writer, &data).unwrap();
+/// # }
+/// ```
 #[inline]
 pub fn to_le_bytes_in<T, W>(writer: W, v: &T) -> Result<(), NbtError>
 where
