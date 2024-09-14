@@ -104,6 +104,57 @@ where
     Ok(())
 }
 
+#[inline]
+pub fn to_net_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
+where
+    T: ?Sized + Serialize,
+{
+    to_bytes::<NetworkLittleEndian, T>(v)
+}
+
+#[inline]
+pub fn to_net_bytes_in<T, W>(writer: W, v: &T) -> Result<(), NbtError>
+where
+    W: WriteBytesExt,
+    T: ?Sized + Serialize,
+{
+    to_bytes_in::<NetworkLittleEndian, T, W>(writer, v)
+}
+
+#[inline]
+pub fn to_be_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
+where
+    T: ?Sized + Serialize,
+{
+    to_bytes::<BigEndian, T>(v)
+}
+
+#[inline]
+pub fn to_be_bytes_in<T, W>(writer: W, v: &T) -> Result<(), NbtError>
+where
+    W: WriteBytesExt,
+    T: ?Sized + Serialize,
+{
+    to_bytes_in::<BigEndian, T, W>(writer, v)
+}
+
+#[inline]
+pub fn to_le_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
+where
+    T: ?Sized + Serialize,
+{
+    to_bytes::<LittleEndian, T>(v)
+}
+
+#[inline]
+pub fn to_le_bytes_in<T, W>(writer: W, v: &T) -> Result<(), NbtError>
+where
+    W: WriteBytesExt,
+    T: ?Sized + Serialize,
+{
+    to_bytes_in::<LittleEndian, T, W>(writer, v)
+}
+
 /// NBT data serialiser.
 #[derive(Debug)]
 pub struct Serializer<W, E>

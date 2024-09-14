@@ -1,8 +1,11 @@
 //! Implements NBT serialisation and deserialisation for three different integer encodings.
 
-pub use crate::de::{from_be_bytes, from_le_bytes, from_var_bytes, Deserializer};
+#![feature(error_generic_member_access)]
+
+pub use crate::de::{from_be_bytes, from_le_bytes, from_net_bytes, Deserializer};
 pub use crate::ser::Serializer;
 pub use crate::value::Value;
+use std::backtrace::Backtrace;
 use std::borrow::Cow;
 use std::fmt::{Debug, Display};
 
@@ -112,7 +115,11 @@ impl TryFrom<u8> for FieldType {
     fn try_from(v: u8) -> Result<Self, Self::Error> {
         const LAST_DISC: u8 = FieldType::LongArray as u8;
         if v > LAST_DISC {
-            return Err(NbtError::TypeOutOfRange(v));
+            panic!("Value: {}", v);
+            return Err(NbtError::TypeOutOfRange {
+                actual: 0,
+                backtrace: Backtrace::capture(),
+            });
         }
 
         // SAFETY: Because `Self` is marked as `repr(u8)`, its layout is guaranteed to start

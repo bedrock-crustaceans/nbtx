@@ -6,7 +6,12 @@ use std::io::Cursor;
 use byteorder::BigEndian;
 use serde::{Deserialize, Serialize};
 
-use crate::{de::from_bytes, from_be_bytes, from_le_bytes, from_var_bytes, ser::to_bytes, Value};
+use crate::{
+    de::from_bytes,
+    from_be_bytes, from_le_bytes, from_net_bytes,
+    ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes},
+    NbtError, Value,
+};
 
 const BIG_TEST_NBT: &[u8] = include_bytes!("../test/bigtest.nbt");
 const HELLO_WORLD_NBT: &[u8] = include_bytes!("../test/hello_world.nbt");
@@ -25,10 +30,10 @@ fn read_write_option() {
         required: "This is Some".to_owned(),
     };
 
-    let some_ser = to_bytes::<BigEndian>(&some).unwrap();
+    let some_ser = to_be_bytes(&some).unwrap();
     let mut some_ser_slice = Cursor::new(some_ser.as_slice());
 
-    let some_de: Value = from_bytes::<BigEndian>(&mut some_ser_slice).unwrap();
+    let some_de: Value = from_be_bytes(&mut some_ser_slice).unwrap();
     dbg!(some_de);
 
     let _none = Optional {
@@ -73,14 +78,14 @@ fn read_write_all() {
         ),
     ]));
 
-    let ser = to_var_bytes(&value).unwrap();
+    let ser = to_net_bytes(&value).unwrap();
     let mut ser_slice = ser.as_slice();
     let ser_le = to_le_bytes(&value).unwrap();
     let mut ser_le_slice = ser_le.as_slice();
     let ser_be = to_be_bytes(&value).unwrap();
     let mut ser_be_slice = ser_be.as_slice();
 
-    from_var_bytes::<Value, _>(&mut ser_slice).unwrap();
+    from_net_bytes::<Value, _>(&mut ser_slice).unwrap();
     from_le_bytes::<Value, _>(&mut ser_le_slice).unwrap();
     from_be_bytes::<Value, _>(&mut ser_be_slice).unwrap();
 }
@@ -153,13 +158,24 @@ fn read_write_hello_world() {
         name: Value,
     }
 
-    let decoded: HelloWorld = from_be_bytes(&mut HELLO_WORLD_NBT).unwrap();
+    let mut copy = Cursor::new(HELLO_WORLD_NBT.to_vec());
+    println!("{copy:?}");
+
+    // let decoded: HelloWorld = dbg!(from_be_bytes(&mut HELLO_WORLD_NBT)).unwrap();
+    let decoded: Result<HelloWorld, NbtError> = from_be_bytes(&mut copy);
+    if let Err(err) = decoded {
+        println!("{err:#}");
+        panic!("");
+    }
+
+    let decoded = decoded.unwrap();
+
     let encoded = to_be_bytes(&decoded).unwrap();
     assert_eq!(encoded.as_slice(), HELLO_WORLD_NBT);
 
     let value: Value = from_be_bytes(&mut HELLO_WORLD_NBT).unwrap();
     let value_encoded = to_be_bytes(&value).unwrap();
-    let value_decoded: Value = from_be_bytes(&mut value_encoded.as_ref()).unwrap();
+    let value_decoded: Value = from_be_bytes(&mut value_encoded.as_slice()).unwrap();
     assert_eq!(value, value_decoded);
 }
 
@@ -184,9 +200,9 @@ fn read_write_player() {
 
     let decoded: Player = from_be_bytes(&mut PLAYER_NAN_VALUE_NBT).unwrap();
     let encoded = to_be_bytes(&decoded).unwrap();
-    let decoded2: Player = from_be_bytes(&mut encoded.as_ref()).unwrap();
+    let decoded2: Player = from_be_bytes(&mut encoded.as_slice()).unwrap();
 
     let _value: Value = from_be_bytes(&mut PLAYER_NAN_VALUE_NBT).unwrap();
     let value_encoded = to_be_bytes(&decoded2).unwrap();
-    let _value_decoded: Value = from_be_bytes(&mut value_encoded.as_ref()).unwrap();
+    let _value_decoded: Value = from_be_bytes(&mut value_encoded.as_slice()).unwrap();
 }

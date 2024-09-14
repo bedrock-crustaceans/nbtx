@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek};
 use std::marker::PhantomData;
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
@@ -44,10 +44,10 @@ macro_rules! forward_unsupported {
 #[derive(Debug)]
 pub struct Deserializer<'re, 'de, F, R>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     F: EndiannessImpl + 'de,
 {
-    input: &'re mut Cursor<R>,
+    input: &'re mut R,
     next_ty: FieldType,
     is_key: bool,
     _marker: PhantomData<&'de F>,
@@ -55,11 +55,11 @@ where
 
 impl<'re, 'de, F, R> Deserializer<'re, 'de, F, R>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     F: EndiannessImpl + 'de,
 {
     /// Creates a new deserialiser, consuming the reader.
-    pub fn new(input: &'re mut Cursor<R>) -> Result<Self, NbtError> {
+    pub fn new(input: &'re mut R) -> Result<Self, NbtError> {
         let next_ty = FieldType::try_from(input.read_u8()?)?;
         if next_ty != FieldType::Compound && next_ty != FieldType::List {
             return Err(NbtError::Other(Cow::Borrowed(
@@ -67,32 +67,27 @@ where
             )));
         }
 
-        let mut de = Deserializer {
+        let de = Deserializer {
             input,
             next_ty,
             is_key: false,
             _marker: PhantomData,
         };
 
-        let _: &str = de.deserialize_raw_str()?;
-
-        Ok(de)
-    }
-
-    /// Deserialise a raw UTF-8 string.
-    fn deserialize_raw_str(&mut self) -> Result<&str, StreamError> {
+        // Ignore name of root component
         let len = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_u16::<BigEndian>()? as u32,
-            Variant::LittleEndian => self.input.read_u16::<LittleEndian>()? as u32,
-            Variant::NetworkEndian => self.input.read_u32_varint()?,
+            Variant::BigEndian => de.input.read_u16::<BigEndian>()? as u32,
+            Variant::LittleEndian => de.input.read_u16::<LittleEndian>()? as u32,
+            Variant::NetworkEndian => de.input.read_u32_varint()?,
         };
 
-        todo!("Obtain slice from cursor directly without copying to heap");
+        let mut buf = vec![0; len as usize];
+        de.input.read_exact(&mut buf)?;
 
-        // let data = self.input.take_n(len as usize)?;
-        // let str = std::str::from_utf8(data)?;
+        let name = String::from_utf8(buf)?;
+        dbg!(name);
 
-        // Ok(str)
+        Ok(de)
     }
 }
 
@@ -100,9 +95,9 @@ where
 ///
 /// On success, the deserialised object and amount of bytes read from the buffer are returned.
 #[inline]
-pub fn from_bytes<'de, 're, F, T, R>(reader: &'re mut Cursor<R>) -> Result<T, NbtError>
+pub fn from_bytes<'de, 're, F, T, R>(reader: &'re mut R) -> Result<T, NbtError>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     T: Deserialize<'de>,
     F: EndiannessImpl + 'de,
 {
@@ -141,9 +136,9 @@ where
 /// # }
 /// ```
 #[inline]
-pub fn from_le_bytes<'de, T, R>(reader: &mut Cursor<R>) -> Result<T, NbtError>
+pub fn from_le_bytes<'de, T, R>(reader: &mut R) -> Result<T, NbtError>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     T: Deserialize<'de>,
 {
     from_bytes::<LittleEndian, T, R>(reader)
@@ -178,9 +173,9 @@ where
 /// # }
 /// ```
 #[inline]
-pub fn from_be_bytes<'de, T, R>(reader: &mut Cursor<R>) -> Result<T, NbtError>
+pub fn from_be_bytes<'de, T, R>(reader: &mut R) -> Result<T, NbtError>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     T: Deserialize<'de>,
 {
     from_bytes::<BigEndian, T, R>(reader)
@@ -215,9 +210,9 @@ where
 /// # }
 /// ```
 #[inline]
-pub fn from_var_bytes<'data, T, R>(reader: &mut Cursor<R>) -> Result<T, NbtError>
+pub fn from_net_bytes<'data, T, R>(reader: &mut R) -> Result<T, NbtError>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     T: Deserialize<'data>,
 {
     from_bytes::<NetworkLittleEndian, T, R>(reader)
@@ -225,7 +220,7 @@ where
 
 impl<'de, 're, 'a, F, R> de::Deserializer<'de> for &'a mut Deserializer<'re, 'de, F, R>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     F: EndiannessImpl + 'a,
 {
     type Error = NbtError;
@@ -237,7 +232,7 @@ where
         V: Visitor<'de>,
     {
         if self.is_key {
-            self.deserialize_str(visitor)
+            self.deserialize_string(visitor)
         } else {
             match self.next_ty {
                 FieldType::End => {
@@ -368,13 +363,15 @@ where
     where
         V: Visitor<'de>,
     {
-        let len = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_u16::<BigEndian>()? as u32,
-            Variant::LittleEndian => self.input.read_u16::<LittleEndian>()? as u32,
-            Variant::NetworkEndian => self.input.read_u32_varint()?,
-        };
+        Err(NbtError::Unsupported(
+            "Deserializing string references is not supported",
+        ))
 
-        todo!("Obtain slice from cursor directly without copying to heap");
+        // let len = match F::AS_ENUM {
+        //     Variant::BigEndian => self.input.read_u16::<BigEndian>()? as u32,
+        //     Variant::LittleEndian => self.input.read_u16::<LittleEndian>()? as u32,
+        //     Variant::NetworkEndian => self.input.read_u32_varint()?,
+        // };
 
         // dbg!(str);
 
@@ -394,7 +391,7 @@ where
             Variant::NetworkEndian => self.input.read_u32_varint()?,
         };
 
-        let mut buf = Vec::with_capacity(len as usize);
+        let mut buf = vec![0; len as usize];
         self.input.read_exact(&mut buf)?;
 
         let string = String::from_utf8(buf)?;
@@ -408,20 +405,24 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(ByteArray, self.next_ty);
+        Err(NbtError::Unsupported(
+            "Deserializing byte slices is not supported",
+        ))
 
-        let len = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_i32::<BigEndian>()? as u32,
-            Variant::LittleEndian => self.input.read_i32::<LittleEndian>()? as u32,
-            Variant::NetworkEndian => self.input.read_i32_varint()? as u32,
-        };
+        // is_ty!(ByteArray, self.next_ty);
 
-        // let mut buf = Vec::with_capacity(len as usize);
-        // self.input.read_exact(&mut buf)?;
-        //
-        todo!("Obtain slice from cursor directly without copying to heap");
+        // let len = match F::AS_ENUM {
+        //     Variant::BigEndian => self.input.read_i32::<BigEndian>()? as u32,
+        //     Variant::LittleEndian => self.input.read_i32::<LittleEndian>()? as u32,
+        //     Variant::NetworkEndian => self.input.read_i32_varint()? as u32,
+        // };
 
-        // visitor.visit_bytes(&buf)
+        // // let mut buf = Vec::with_capacity(len as usize);
+        // // self.input.read_exact(&mut buf)?;
+        // //
+        // todo!("Obtain slice from cursor directly without copying to heap");
+
+        // // visitor.visit_bytes(&buf)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, NbtError>
@@ -436,7 +437,7 @@ where
             Variant::NetworkEndian => self.input.read_i32_varint()? as u32,
         };
 
-        let mut buf = Vec::with_capacity(len as usize);
+        let mut buf = vec![0; len as usize];
         self.input.read_exact(&mut buf)?;
 
         visitor.visit_byte_buf(buf)
@@ -569,7 +570,7 @@ where
     where
         V: Visitor<'de>,
     {
-        self.deserialize_str(visitor)
+        self.deserialize_string(visitor)
     }
 
     #[inline]
@@ -593,7 +594,7 @@ where
 #[derive(Debug)]
 struct SeqDeserializer<'a, 're, 'de: 'a, F, R>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     F: EndiannessImpl,
 {
     de: &'a mut Deserializer<'re, 'de, F, R>,
@@ -603,7 +604,7 @@ where
 
 impl<'de, 're, 'a, F, R> SeqDeserializer<'a, 're, 'de, F, R>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     F: EndiannessImpl,
 {
     #[inline]
@@ -635,7 +636,7 @@ where
 
 impl<'de, 're, 'a, F, R> SeqAccess<'de> for SeqDeserializer<'a, 're, 'de, F, R>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     F: EndiannessImpl,
 {
     type Error = NbtError;
@@ -661,7 +662,7 @@ where
 #[derive(Debug)]
 struct MapDeserializer<'a, 're, 'de: 'a, F, R>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     F: EndiannessImpl,
 {
     de: &'a mut Deserializer<'re, 'de, F, R>,
@@ -670,7 +671,7 @@ where
 impl<'de, 're, 'a, F, R> From<&'a mut Deserializer<'re, 'de, F, R>>
     for MapDeserializer<'a, 're, 'de, F, R>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     F: EndiannessImpl,
 {
     #[inline]
@@ -681,7 +682,7 @@ where
 
 impl<'de, 're, 'a, F, R> MapAccess<'de> for MapDeserializer<'a, 're, 'de, F, R>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
+    R: ReadBytesExt,
     F: EndiannessImpl,
 {
     type Error = NbtError;
@@ -695,6 +696,7 @@ where
         self.de.next_ty = FieldType::String;
 
         let next_ty = FieldType::try_from(self.de.input.read_u8()?)?;
+        dbg!(&next_ty);
 
         let r = if next_ty == FieldType::End {
             Ok(None)
