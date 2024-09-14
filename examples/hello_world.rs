@@ -1,13 +1,17 @@
-use std::io::Cursor;
 use byteorder::BigEndian;
 use nbtx::Value;
+use std::collections::HashMap;
+use std::io::Cursor;
 
 fn main() {
-    let value = Value::String("Hello World!".to_string());
+    let value = Value::Compound(HashMap::from([(
+        "Hello World".to_string(),
+        Value::String("Helloooo World!".to_string()),
+    )]));
 
     let bytes = nbtx::to_bytes::<BigEndian>(&value).unwrap();
 
-    let res = nbtx::from_le_bytes(&mut Cursor::new(&*bytes)).unwrap();
+    let res = nbtx::from_bytes::<BigEndian, Value>(&mut Cursor::new(bytes.as_slice())).unwrap();
 
     assert_eq!(value, res)
 }

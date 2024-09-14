@@ -7,7 +7,7 @@ use serde::{ser, Serialize};
 
 use varint_rs::VarintWriter;
 
-use crate::{EndiannessImpl, FieldType, NbtError, NetworkLittleEndian, Variant};
+use crate::{EndiannessImpl, FieldType, NbtError, Variant};
 
 /// Returns a `not supported` error.
 macro_rules! forward_unsupported {
@@ -124,7 +124,7 @@ where
     W: WriteBytesExt,
     E: EndiannessImpl,
 {
-    /// Creates a new and empty serialiser.
+    /// Creates a new and empty serializer.
     #[inline]
     pub const fn new(w: W) -> Serializer<W, E> {
         Serializer {
@@ -255,11 +255,15 @@ where
     }
 
     fn serialize_none(self) -> Result<(), NbtError> {
-        Err(NbtError::Unsupported("Serializing None is not supported"))
+        Err(NbtError::Unsupported(
+            "Serializing Options is not supported",
+        ))
     }
 
-    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<(), NbtError> {
-        value.serialize(self)
+    fn serialize_some<T: Serialize + ?Sized>(self, _value: &T) -> Result<(), NbtError> {
+        Err(NbtError::Unsupported(
+            "Serializing Options is not supported",
+        ))
     }
 
     fn serialize_unit(self) -> Result<(), NbtError> {
@@ -345,7 +349,7 @@ where
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
         // nbt::Value does not distinguish between maps and structs.
-        // Therefore this is also needed here
+        // Therefore, this is also necessary here
         if self.is_initial {
             self.writer.write_u8(FieldType::Compound as u8)?;
             self.serialize_str("")?;

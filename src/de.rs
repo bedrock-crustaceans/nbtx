@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::io::{Cursor, Read};
+use std::io::{BufRead, Cursor, Read};
 use std::marker::PhantomData;
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
@@ -9,7 +9,7 @@ use serde::{de, Deserialize};
 use varint_rs::VarintReader;
 
 use crate::error::StreamError;
-use crate::{EndiannessImpl, FieldType, NbtError, NetworkLittleEndian, Variant};
+use crate::{EndiannessImpl, FieldType, NbtError, Variant};
 
 /// Verifies that the deserialized type is equal to the expected type.
 macro_rules! is_ty {
@@ -61,11 +61,6 @@ where
     /// Creates a new deserializer, consuming the reader.
     pub fn new(input: &'re mut Cursor<R>) -> Result<Self, NbtError> {
         let next_ty = FieldType::try_from(input.read_u8()?)?;
-        if next_ty != FieldType::Compound && next_ty != FieldType::List {
-            return Err(NbtError::Other(Cow::Borrowed(
-                "Expected compound or list tag as root",
-            )));
-        }
 
         let mut de = Deserializer {
             input,
@@ -74,154 +69,38 @@ where
             _marker: PhantomData,
         };
 
-        let _: &str = de.deserialize_raw_str()?;
+        de.deserialize_raw_str()?;
 
         Ok(de)
     }
 
-    /// Deserialise a raw UTF-8 string.
-    fn deserialize_raw_str(&mut self) -> Result<&str, StreamError> {
+    /// Deserialize a raw UTF-8 string.
+    fn deserialize_raw_str(&mut self) -> Result<(), StreamError> {
         let len = match F::AS_ENUM {
             Variant::BigEndian => self.input.read_u16::<BigEndian>()? as u32,
             Variant::LittleEndian => self.input.read_u16::<LittleEndian>()? as u32,
             Variant::NetworkEndian => self.input.read_u32_varint()?,
         };
 
-        todo!("Obtain slice from cursor directly without copying to heap");
+        self.input.consume(len as usize);
 
-        // let data = self.input.take_n(len as usize)?;
-        // let str = std::str::from_utf8(data)?;
-
-        // Ok(str)
+        Ok(())
     }
 }
 
 /// Reads a single object of type `T` from the given buffer.
 ///
-/// On success, the deserialised object and amount of bytes read from the buffer are returned.
+/// On success, the deserialized object and number of bytes read from the buffer are returned.
 #[inline]
-pub fn from_bytes<'de, 're, F, T, R>(reader: &'re mut Cursor<R>) -> Result<T, NbtError>
+pub fn from_bytes<'de, 're, F, T>(reader: &'re mut Cursor<&[u8]>) -> Result<T, NbtError>
 where
-    R: ReadBytesExt + AsRef<[u8]>,
     T: Deserialize<'de>,
     F: EndiannessImpl + 'de,
 {
-    let mut deserializer = Deserializer::<F, R>::new(reader)?;
+    let mut deserializer = Deserializer::<F, &[u8]>::new(reader)?;
     let output = T::deserialize(&mut deserializer)?;
 
     Ok(output)
-}
-
-/// Reads a single object of type `T` from the given buffer.
-///
-/// This function uses the little endian format of NBT, which is used by disk formats
-/// in Minecraft: Bedrock Edition.
-///
-/// On success, the deserialised object and amount of bytes read from the buffer are returned.
-///
-/// # Example
-///
-/// ```rust
-/// # use bedrockrs_nbt as nbt;
-///
-/// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
-///  struct Data {
-///     value: String
-///  }
-///
-/// # let data = Data {
-/// #   value: String::from("Hello, World!")
-/// # };
-/// # let obuffer = nbt::to_le_bytes(&data).unwrap();
-/// # let mut buffer: &[u8] = obuffer.as_ref();
-///
-///  let data: Data = nbt::from_le_bytes(&mut buffer).unwrap();
-///
-///  println!("Got {data:?}!");
-/// # }
-/// ```
-#[inline]
-pub fn from_le_bytes<'de, T, R>(reader: &mut Cursor<R>) -> Result<T, NbtError>
-where
-    R: ReadBytesExt + AsRef<[u8]>,
-    T: Deserialize<'de>,
-{
-    from_bytes::<LittleEndian, T, R>(reader)
-}
-
-/// Reads a single object of type `T` from the given buffer.
-///
-/// This function uses the little endian format of NBT, which is used by
-/// Minecraft: Java Edition.
-///
-/// On success, the deserialised object and amount of bytes read from the buffer are returned.
-///
-/// # Example
-///
-/// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
-///  struct Data {
-///     value: String
-///  }
-///
-/// # let data = Data {
-/// #   value: String::from("Hello, World!")
-/// # };
-/// # let owned_buffer = nbt::to_be_bytes(&data).unwrap();
-/// # let mut buffer = owned_buffer.as_slice();
-///
-///  let data: Data = nbt::from_be_bytes(&mut buffer).unwrap();
-///
-///  println!("Got {data:?}!");
-/// # }
-/// ```
-#[inline]
-pub fn from_be_bytes<'de, T, R>(reader: &mut Cursor<R>) -> Result<T, NbtError>
-where
-    R: ReadBytesExt + AsRef<[u8]>,
-    T: Deserialize<'de>,
-{
-    from_bytes::<BigEndian, T, R>(reader)
-}
-
-/// Reads a single object of type `T` from the given buffer.
-///
-/// This function uses the variable format of NBT, which is used by network formats
-/// in Minecraft: Bedrock Edition.
-///
-/// On success, the deserialised object and amount of bytes read from the buffer are returned.
-///
-/// # Example
-///
-/// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
-///  struct Data {
-///     value: String
-///  }
-///
-/// # let data = Data {
-/// #   value: String::from("Hello, World!")
-/// # };
-/// # let owned_buffer = nbt::to_var_bytes(&data).unwrap();
-/// # let mut buffer = owned_buffer.as_slice();
-///
-///  let data: Data = nbt::from_var_bytes(&mut buffer).unwrap();
-///
-///  println!("Got {data:?}!");
-/// # }
-/// ```
-#[inline]
-pub fn from_var_bytes<'data, T, R>(reader: &mut Cursor<R>) -> Result<T, NbtError>
-where
-    R: ReadBytesExt + AsRef<[u8]>,
-    T: Deserialize<'data>,
-{
-    from_bytes::<NetworkLittleEndian, T, R>(reader)
 }
 
 impl<'de, 're, 'a, F, R> de::Deserializer<'de> for &'a mut Deserializer<'re, 'de, F, R>
@@ -241,11 +120,9 @@ where
             self.deserialize_str(visitor)
         } else {
             match self.next_ty {
-                FieldType::End => {
-                    return Err(NbtError::Other(Cow::Borrowed(
-                        "Encountered unmatched end tag",
-                    )))
-                }
+                FieldType::End => Err(NbtError::Other(Cow::Borrowed(
+                    "Encountered unmatched end tag",
+                ))),
                 FieldType::Byte => self.deserialize_i8(visitor),
                 FieldType::Short => self.deserialize_i16(visitor),
                 FieldType::Int => self.deserialize_i32(visitor),
@@ -255,10 +132,7 @@ where
                 FieldType::ByteArray => self.deserialize_byte_buf(visitor),
                 FieldType::String => self.deserialize_string(visitor),
                 FieldType::List => self.deserialize_seq(visitor),
-                FieldType::Compound => {
-                    let m = self.deserialize_map(visitor);
-                    m
-                }
+                FieldType::Compound => self.deserialize_map(visitor),
                 FieldType::IntArray => self.deserialize_seq(visitor),
                 FieldType::LongArray => self.deserialize_seq(visitor),
             }
@@ -375,11 +249,14 @@ where
             Variant::NetworkEndian => self.input.read_u32_varint()?,
         };
 
-        todo!("Obtain slice from cursor directly without copying to heap");
+        let mut buf = Vec::with_capacity(len as usize);
+        self.input.read_exact(&mut buf)?;
 
-        // dbg!(str);
+        let string = String::from_utf8(buf)?;
 
-        // visitor.visit_str(str)
+        dbg!((&string, self.input.position()));
+
+        visitor.visit_string(string)
     }
 
     #[inline]
@@ -400,7 +277,7 @@ where
 
         let string = String::from_utf8(buf)?;
 
-        // dbg!(&string);
+        dbg!((&string, self.input.position()));
 
         visitor.visit_string(string)
     }
@@ -417,12 +294,10 @@ where
             Variant::NetworkEndian => self.input.read_i32_varint()? as u32,
         };
 
-        // let mut buf = Vec::with_capacity(len as usize);
-        // self.input.read_exact(&mut buf)?;
-        //
-        todo!("Obtain slice from cursor directly without copying to heap");
+        let mut buf = Vec::with_capacity(len as usize);
+        self.input.read_exact(&mut buf)?;
 
-        // visitor.visit_bytes(&buf)
+        visitor.visit_bytes(&buf)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, NbtError>
@@ -444,14 +319,13 @@ where
     }
 
     #[inline]
-    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, NbtError>
+    fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value, NbtError>
     where
         V: Visitor<'de>,
     {
-        // This is only used to represent possibly missing fields.
-        // If this code is reached, it means the key was found and the field exists.
-        // Therefore this is always some.
-        visitor.visit_some(self)
+        Err(NbtError::Unsupported(
+            "Deserializing Options is not supported",
+        ))
     }
 
     fn deserialize_unit<V>(self, _visitor: V) -> Result<V::Value, NbtError>

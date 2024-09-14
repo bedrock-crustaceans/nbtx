@@ -3,38 +3,33 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 
-use byteorder::BigEndian;
+use byteorder::{BigEndian, LittleEndian};
 use serde::{Deserialize, Serialize};
 
-use crate::{de::from_bytes, from_be_bytes, from_le_bytes, from_var_bytes, ser::to_bytes, Value};
+use crate::{de::from_bytes, ser::to_bytes, NetworkLittleEndian, Value};
 
 const BIG_TEST_NBT: &[u8] = include_bytes!("../test/bigtest.nbt");
 const HELLO_WORLD_NBT: &[u8] = include_bytes!("../test/hello_world.nbt");
 const PLAYER_NAN_VALUE_NBT: &[u8] = include_bytes!("../test/player_nan_value.nbt");
 
 #[test]
-fn read_write_option() {
+fn read_write_salad() {
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
-    struct Optional {
-        optional: Option<i32>,
-        required: String,
+    struct Salad {
+        name: String,
+        quantity: i32,
     }
 
-    let some = Optional {
-        optional: None,
-        required: "This is Some".to_owned(),
+    let salad = Salad {
+        name: String::from("Caesar Salad"),
+        quantity: 3,
     };
 
-    let some_ser = to_bytes::<BigEndian>(&some).unwrap();
+    let some_ser = to_bytes::<BigEndian>(&salad).unwrap();
     let mut some_ser_slice = Cursor::new(some_ser.as_slice());
 
-    let some_de: Value = from_bytes::<BigEndian>(&mut some_ser_slice).unwrap();
+    let some_de: Value = from_bytes::<BigEndian, Value>(&mut some_ser_slice).unwrap();
     dbg!(some_de);
-
-    let _none = Optional {
-        optional: None,
-        required: "This is None".to_owned(),
-    };
 }
 
 #[test]
@@ -73,16 +68,16 @@ fn read_write_all() {
         ),
     ]));
 
-    let ser = to_var_bytes(&value).unwrap();
-    let mut ser_slice = ser.as_slice();
-    let ser_le = to_le_bytes(&value).unwrap();
-    let mut ser_le_slice = ser_le.as_slice();
-    let ser_be = to_be_bytes(&value).unwrap();
-    let mut ser_be_slice = ser_be.as_slice();
+    let ser_var = to_bytes::<NetworkLittleEndian>(&value).unwrap();
+    let mut ser_slice = Cursor::new(ser_var.as_slice());
+    let ser_le = to_bytes::<LittleEndian>(&value).unwrap();
+    let mut ser_le_slice = Cursor::new(ser_le.as_slice());
+    let ser_be = to_bytes::<BigEndian>(&value).unwrap();
+    let mut ser_be_slice = Cursor::new(ser_be.as_slice());
 
-    from_var_bytes::<Value, _>(&mut ser_slice).unwrap();
-    from_le_bytes::<Value, _>(&mut ser_le_slice).unwrap();
-    from_be_bytes::<Value, _>(&mut ser_be_slice).unwrap();
+    from_bytes::<NetworkLittleEndian, Value>(&mut ser_slice).unwrap();
+    from_bytes::<LittleEndian, Value>(&mut ser_le_slice).unwrap();
+    from_bytes::<BigEndian, Value>(&mut ser_be_slice).unwrap();
 }
 
 #[test]
@@ -134,14 +129,18 @@ fn read_write_bigtest() {
         short_test: i16,
     }
 
-    let decoded: AllTypes = from_be_bytes(&mut BIG_TEST_NBT).unwrap();
+    let mut big_test_nbt = Cursor::new(BIG_TEST_NBT.as_ref());
+    let decoded: AllTypes = from_bytes::<BigEndian, _>(&mut big_test_nbt).unwrap();
 
-    let encoded = to_be_bytes(&decoded).unwrap();
-    let _decoded2: AllTypes = from_be_bytes(&mut encoded.as_slice()).unwrap();
+    let encoded = to_bytes::<BigEndian>(&decoded).unwrap();
+    let mut encoded = Cursor::new(encoded.as_slice());
+    let _decoded2: AllTypes = from_bytes::<BigEndian, _>(&mut encoded).unwrap();
 
-    let value: Value = from_be_bytes(&mut BIG_TEST_NBT).unwrap();
-    let value_encoded = to_be_bytes(&value).unwrap();
-    let value_decoded: Value = from_be_bytes(&mut value_encoded.as_slice()).unwrap();
+    let mut big_test_nbt = Cursor::new(BIG_TEST_NBT.as_ref());
+    let value: Value = from_bytes::<BigEndian, _>(&mut big_test_nbt).unwrap();
+    let value_encoded = to_bytes::<BigEndian>(&value).unwrap();
+    let mut value_encoded = Cursor::new(value_encoded.as_slice());
+    let value_decoded: Value = from_bytes::<BigEndian, _>(&mut value_encoded).unwrap();
     assert_eq!(value, value_decoded);
 }
 
@@ -153,13 +152,16 @@ fn read_write_hello_world() {
         name: Value,
     }
 
-    let decoded: HelloWorld = from_be_bytes(&mut HELLO_WORLD_NBT).unwrap();
-    let encoded = to_be_bytes(&decoded).unwrap();
+    let mut hello_world_nbt = Cursor::new(HELLO_WORLD_NBT);
+    let decoded: HelloWorld = from_bytes::<BigEndian, _>(&mut hello_world_nbt).unwrap();
+    let encoded = to_bytes::<BigEndian>(&decoded).unwrap();
     assert_eq!(encoded.as_slice(), HELLO_WORLD_NBT);
 
-    let value: Value = from_be_bytes(&mut HELLO_WORLD_NBT).unwrap();
-    let value_encoded = to_be_bytes(&value).unwrap();
-    let value_decoded: Value = from_be_bytes(&mut value_encoded.as_ref()).unwrap();
+    let mut hello_world_nbt = Cursor::new(HELLO_WORLD_NBT);
+    let value: Value = from_bytes::<BigEndian, _>(&mut hello_world_nbt).unwrap();
+    let value_encoded = to_bytes::<BigEndian>(&value).unwrap();
+    let mut value_encoded = Cursor::new(value_encoded.as_slice());
+    let value_decoded: Value = from_bytes::<BigEndian, _>(&mut value_encoded).unwrap();
     assert_eq!(value, value_decoded);
 }
 
@@ -182,11 +184,15 @@ fn read_write_player() {
         rotation: [f32; 2],
     }
 
-    let decoded: Player = from_be_bytes(&mut PLAYER_NAN_VALUE_NBT).unwrap();
-    let encoded = to_be_bytes(&decoded).unwrap();
-    let decoded2: Player = from_be_bytes(&mut encoded.as_ref()).unwrap();
+    let mut player_nan_value_nbt = Cursor::new(PLAYER_NAN_VALUE_NBT);
+    let decoded: Player = from_bytes::<BigEndian, _>(&mut player_nan_value_nbt).unwrap();
+    let encoded = to_bytes::<BigEndian>(&decoded).unwrap();
+    let mut encoded = Cursor::new(encoded.as_slice());
+    let decoded2: Player = from_bytes::<BigEndian, _>(&mut encoded).unwrap();
 
-    let _value: Value = from_be_bytes(&mut PLAYER_NAN_VALUE_NBT).unwrap();
-    let value_encoded = to_be_bytes(&decoded2).unwrap();
-    let _value_decoded: Value = from_be_bytes(&mut value_encoded.as_ref()).unwrap();
+    let mut player_nan_value_nbt = Cursor::new(PLAYER_NAN_VALUE_NBT);
+    let _value: Value = from_bytes::<BigEndian, _>(&mut player_nan_value_nbt).unwrap();
+    let value_encoded = to_bytes::<BigEndian>(&decoded2).unwrap();
+    let mut value_encoded = Cursor::new(value_encoded.as_slice());
+    let _value_decoded: Value = from_bytes::<BigEndian, _>(&mut value_encoded).unwrap();
 }
