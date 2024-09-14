@@ -3,14 +3,11 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 
-use byteorder::BigEndian;
+use byteorder::{BigEndian, LittleEndian};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    de::from_bytes,
-    from_be_bytes, from_le_bytes, from_net_bytes,
-    ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes},
-    NbtError, Value,
+    de::from_bytes, from_be_bytes, from_le_bytes, from_net_bytes, ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes}, NbtError, NetworkLittleEndian, Value
 };
 
 const BIG_TEST_NBT: &[u8] = include_bytes!("../test/bigtest.nbt");
@@ -139,14 +136,19 @@ fn read_write_bigtest() {
         short_test: i16,
     }
 
-    let decoded: AllTypes = from_be_bytes(&mut BIG_TEST_NBT).unwrap();
+    let mut big_test_nbt = Cursor::new(BIG_TEST_NBT.as_ref());
+    let decoded: AllTypes = from_be_bytes(&mut big_test_nbt).unwrap();
 
-    let encoded = to_be_bytes(&decoded).unwrap();
-    let _decoded2: AllTypes = from_be_bytes(&mut encoded.as_slice()).unwrap();
+    let encoded = to_bytes::<BigEndian>(&decoded).unwrap();
+    let mut encoded = Cursor::new(encoded.as_slice());
+    let _decoded2: AllTypes = from_be_bytes(&mut encoded).unwrap();
 
-    let value: Value = from_be_bytes(&mut BIG_TEST_NBT).unwrap();
-    let value_encoded = to_be_bytes(&value).unwrap();
-    let value_decoded: Value = from_be_bytes(&mut value_encoded.as_slice()).unwrap();
+    let mut big_test_nbt = Cursor::new(BIG_TEST_NBT.as_ref());
+    let value: Value = from_be_bytes(&mut big_test_nbt).unwrap();
+
+    let value_encoded = to_bytes::<NetworkLittleEndian>(&value).unwrap();
+    let mut value_encoded = Cursor::new(value_encoded.as_slice());
+    let value_decoded: Value = from_net_bytes(&mut value_encoded).unwrap();
     assert_eq!(value, value_decoded);
 }
 

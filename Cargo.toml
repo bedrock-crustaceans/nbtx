@@ -1,14 +1,17 @@
 [package]
-name = "bedrockrs_nbt"
+name = "nbtx"
 version = "0.1.0"
 edition = "2021"
-authors = ["Ruben Adema"]
+authors = ["Ruben Adema", "theaddonn <theaddonn@gmail.com>"]
 repository = "https://github.com/bedrock-crustaceans/bedrockrs-nbt"
 license = "Apache-2.0"
 
 [dependencies]
-serde = { version = "1.0.204", features = ["derive"] }
-paste = "1.0.15"
-thiserror = "1.0.63"
-byteorder = "1.5.0"
-varint-rs = "2.2.0"
+serde = { version = "1.0", features = ["derive"] }
+paste = "1.0"
+thiserror = "1.0"
+byteorder = "1.5"
+varint-rs = "2.2"
+
+[[example]]
+name = "hello_world"

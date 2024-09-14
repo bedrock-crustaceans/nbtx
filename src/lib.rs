@@ -1,4 +1,4 @@
-//! Implements NBT serialisation and deserialisation for three different integer encodings.
+//! Implements NBT serialisation and deserialization for three different integer encodings.
 
 #![feature(error_generic_member_access)]
 

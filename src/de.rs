@@ -11,7 +11,7 @@ use varint_rs::VarintReader;
 use crate::error::StreamError;
 use crate::{EndiannessImpl, FieldType, NbtError, NetworkLittleEndian, Variant};
 
-/// Verifies that the deserialised type is equal to the expected type.
+/// Verifies that the deserialized type is equal to the expected type.
 macro_rules! is_ty {
     ($expected: ident, $actual: expr) => {
         if $actual != FieldType::$expected {
@@ -40,7 +40,7 @@ macro_rules! forward_unsupported {
     }
 }
 
-/// NBT deserialiser.
+/// NBT deserializer.
 #[derive(Debug)]
 pub struct Deserializer<'re, 'de, F, R>
 where
@@ -58,14 +58,9 @@ where
     R: ReadBytesExt,
     F: EndiannessImpl + 'de,
 {
-    /// Creates a new deserialiser, consuming the reader.
+    /// Creates a new deserializer, consuming the reader.
     pub fn new(input: &'re mut R) -> Result<Self, NbtError> {
         let next_ty = FieldType::try_from(input.read_u8()?)?;
-        if next_ty != FieldType::Compound && next_ty != FieldType::List {
-            return Err(NbtError::Other(Cow::Borrowed(
-                "Expected compound or list tag as root",
-            )));
-        }
 
         let de = Deserializer {
             input,
@@ -93,15 +88,14 @@ where
 
 /// Reads a single object of type `T` from the given buffer.
 ///
-/// On success, the deserialised object and amount of bytes read from the buffer are returned.
+/// On success, the deserialized object and number of bytes read from the buffer are returned.
 #[inline]
-pub fn from_bytes<'de, 're, F, T, R>(reader: &'re mut R) -> Result<T, NbtError>
+pub fn from_bytes<'de, 're, F, T>(reader: &'re mut impl ReadBytesExt) -> Result<T, NbtError>
 where
-    R: ReadBytesExt,
     T: Deserialize<'de>,
     F: EndiannessImpl + 'de,
 {
-    let mut deserializer = Deserializer::<F, R>::new(reader)?;
+    let mut deserializer = Deserializer::<F, _>::new(reader)?;
     let output = T::deserialize(&mut deserializer)?;
 
     Ok(output)
@@ -117,7 +111,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use bedrockrs_nbt as nbt;
+/// # use nbtx as nbt;
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
 ///  struct Data {
@@ -141,7 +135,7 @@ where
     R: ReadBytesExt,
     T: Deserialize<'de>,
 {
-    from_bytes::<LittleEndian, T, R>(reader)
+    from_bytes::<LittleEndian, T>(reader)
 }
 
 /// Reads a single object of type `T` from the given buffer.
@@ -154,7 +148,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use bedrockrs_nbt as nbt;
+/// # use nbtx as nbt;
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
 ///  struct Data {
@@ -178,7 +172,7 @@ where
     R: ReadBytesExt,
     T: Deserialize<'de>,
 {
-    from_bytes::<BigEndian, T, R>(reader)
+    from_bytes::<BigEndian, T>(reader)
 }
 
 /// Reads a single object of type `T` from the given buffer.
@@ -191,7 +185,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use bedrockrs_nbt as nbt;
+/// # use nbtx as nbt;
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
 ///  struct Data {
@@ -215,7 +209,7 @@ where
     R: ReadBytesExt,
     T: Deserialize<'data>,
 {
-    from_bytes::<NetworkLittleEndian, T, R>(reader)
+    from_bytes::<NetworkLittleEndian, T>(reader)
 }
 
 impl<'de, 're, 'a, F, R> de::Deserializer<'de> for &'a mut Deserializer<'re, 'de, F, R>
@@ -235,11 +229,9 @@ where
             self.deserialize_string(visitor)
         } else {
             match self.next_ty {
-                FieldType::End => {
-                    return Err(NbtError::Other(Cow::Borrowed(
-                        "Encountered unmatched end tag",
-                    )))
-                }
+                FieldType::End => Err(NbtError::Other(Cow::Borrowed(
+                    "Encountered unmatched end tag",
+                ))),
                 FieldType::Byte => self.deserialize_i8(visitor),
                 FieldType::Short => self.deserialize_i16(visitor),
                 FieldType::Int => self.deserialize_i32(visitor),
@@ -249,10 +241,7 @@ where
                 FieldType::ByteArray => self.deserialize_byte_buf(visitor),
                 FieldType::String => self.deserialize_string(visitor),
                 FieldType::List => self.deserialize_seq(visitor),
-                FieldType::Compound => {
-                    let m = self.deserialize_map(visitor);
-                    m
-                }
+                FieldType::Compound => self.deserialize_map(visitor),
                 FieldType::IntArray => self.deserialize_seq(visitor),
                 FieldType::LongArray => self.deserialize_seq(visitor),
             }
@@ -359,23 +348,13 @@ where
     }
 
     #[inline]
-    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, NbtError>
+    fn deserialize_str<V>(self, _visitor: V) -> Result<V::Value, NbtError>
     where
         V: Visitor<'de>,
     {
         Err(NbtError::Unsupported(
             "Deserializing string references is not supported",
         ))
-
-        // let len = match F::AS_ENUM {
-        //     Variant::BigEndian => self.input.read_u16::<BigEndian>()? as u32,
-        //     Variant::LittleEndian => self.input.read_u16::<LittleEndian>()? as u32,
-        //     Variant::NetworkEndian => self.input.read_u32_varint()?,
-        // };
-
-        // dbg!(str);
-
-        // visitor.visit_str(str)
     }
 
     #[inline]
@@ -395,9 +374,6 @@ where
         self.input.read_exact(&mut buf)?;
 
         let string = String::from_utf8(buf)?;
-
-        // dbg!(&string);
-
         visitor.visit_string(string)
     }
 
@@ -444,14 +420,13 @@ where
     }
 
     #[inline]
-    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, NbtError>
+    fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value, NbtError>
     where
         V: Visitor<'de>,
     {
-        // This is only used to represent possibly missing fields.
-        // If this code is reached, it means the key was found and the field exists.
-        // Therefore this is always some.
-        visitor.visit_some(self)
+        Err(NbtError::Unsupported(
+            "Deserializing Options is not supported",
+        ))
     }
 
     fn deserialize_unit<V>(self, _visitor: V) -> Result<V::Value, NbtError>

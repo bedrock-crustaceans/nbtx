@@ -47,8 +47,6 @@ macro_rules! forward_unsupported_field {
 /// # Example
 ///
 /// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// #
 /// # fn main() {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
@@ -56,12 +54,11 @@ macro_rules! forward_unsupported_field {
 ///  }
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbt::to_bytes::<nbt::BigEndian, _>(&data).unwrap();
+///  let encoded = nbtx::to_bytes::<nbtx::BigEndian>(&data).unwrap();
 /// # }
 /// ```
-pub fn to_bytes<E, T>(v: &T) -> Result<Vec<u8>, NbtError>
+pub fn to_bytes<E>(v: &(impl Serialize + ?Sized)) -> Result<Vec<u8>, NbtError>
 where
-    T: ?Sized + Serialize,
     E: EndiannessImpl,
 {
     let mut ser = Serializer::<_, E>::new(Vec::new());
@@ -80,22 +77,18 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use bedrockrs_nbt as nbt;
-/// #
 /// # fn main() {
-///  #[derive(serde::Serialize, serde::Deserialize)]
+/// #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
 ///     value: String
 ///  }
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbt::to_be_bytes(&data).unwrap();
+///  let encoded = nbtx::to_bytes::<nbtx::BigEndian>(&data).unwrap();
 /// # }
 /// ```
-pub fn to_bytes_in<E, T, W>(writer: W, v: &T) -> Result<(), NbtError>
+pub fn to_bytes_in<E>(writer: impl WriteBytesExt, v: &(impl Serialize + ?Sized)) -> Result<(), NbtError>
 where
-    W: WriteBytesExt,
-    T: ?Sized + Serialize,
     E: EndiannessImpl,
 {
     let mut ser = Serializer::<_, E>::new(writer);
@@ -109,7 +102,7 @@ pub fn to_net_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
 where
     T: ?Sized + Serialize,
 {
-    to_bytes::<NetworkLittleEndian, T>(v)
+    to_bytes::<NetworkLittleEndian>(v)
 }
 
 #[inline]
@@ -118,7 +111,7 @@ where
     W: WriteBytesExt,
     T: ?Sized + Serialize,
 {
-    to_bytes_in::<NetworkLittleEndian, T, W>(writer, v)
+    to_bytes_in::<NetworkLittleEndian>(writer, v)
 }
 
 #[inline]
@@ -126,7 +119,7 @@ pub fn to_be_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
 where
     T: ?Sized + Serialize,
 {
-    to_bytes::<BigEndian, T>(v)
+    to_bytes::<BigEndian>(v)
 }
 
 #[inline]
@@ -135,7 +128,7 @@ where
     W: WriteBytesExt,
     T: ?Sized + Serialize,
 {
-    to_bytes_in::<BigEndian, T, W>(writer, v)
+    to_bytes_in::<BigEndian>(writer, v)
 }
 
 #[inline]
@@ -143,7 +136,7 @@ pub fn to_le_bytes<T>(v: &T) -> Result<Vec<u8>, NbtError>
 where
     T: ?Sized + Serialize,
 {
-    to_bytes::<LittleEndian, T>(v)
+    to_bytes::<LittleEndian>(v)
 }
 
 #[inline]
@@ -152,10 +145,10 @@ where
     W: WriteBytesExt,
     T: ?Sized + Serialize,
 {
-    to_bytes_in::<LittleEndian, T, W>(writer, v)
+    to_bytes_in::<LittleEndian>(writer, v)
 }
 
-/// NBT data serialiser.
+/// NBT data serializer.
 #[derive(Debug)]
 pub struct Serializer<W, E>
 where
@@ -176,7 +169,7 @@ where
     W: WriteBytesExt,
     E: EndiannessImpl,
 {
-    /// Creates a new and empty serialiser.
+    /// Creates a new and empty serializer.
     #[inline]
     pub const fn new(w: W) -> Serializer<W, E> {
         Serializer {
@@ -307,11 +300,15 @@ where
     }
 
     fn serialize_none(self) -> Result<(), NbtError> {
-        Err(NbtError::Unsupported("Serializing None is not supported"))
+        Err(NbtError::Unsupported(
+            "Serializing Options is not supported",
+        ))
     }
 
-    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<(), NbtError> {
-        value.serialize(self)
+    fn serialize_some<T: Serialize + ?Sized>(self, _value: &T) -> Result<(), NbtError> {
+        Err(NbtError::Unsupported(
+            "Serializing Options is not supported",
+        ))
     }
 
     fn serialize_unit(self) -> Result<(), NbtError> {
@@ -397,7 +394,7 @@ where
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
         // nbt::Value does not distinguish between maps and structs.
-        // Therefore this is also needed here
+        // Therefore, this is also necessary here
         if self.is_initial {
             self.writer.write_u8(FieldType::Compound as u8)?;
             self.serialize_str("")?;
