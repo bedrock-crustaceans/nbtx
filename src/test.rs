@@ -31,7 +31,7 @@ fn read_write_option() {
     let mut some_ser_slice = Cursor::new(some_ser.as_slice());
 
     let some_de: Value = from_be_bytes(&mut some_ser_slice).unwrap();
-    dbg!(some_de);
+    // dbg!(some_de);
 
     let _none = Optional {
         optional: None,

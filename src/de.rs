@@ -79,8 +79,7 @@ where
         let mut buf = vec![0; len as usize];
         de.input.read_exact(&mut buf)?;
 
-        let name = String::from_utf8(buf)?;
-        dbg!(name);
+        // let _name = String::from_utf8(buf)?;
 
         Ok(de)
     }
@@ -671,7 +670,7 @@ where
         self.de.next_ty = FieldType::String;
 
         let next_ty = FieldType::try_from(self.de.input.read_u8()?)?;
-        dbg!(&next_ty);
+        // dbg!(&next_ty);
 
         let r = if next_ty == FieldType::End {
             Ok(None)
