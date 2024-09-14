@@ -61,6 +61,12 @@ where
     /// Creates a new deserializer, consuming the reader.
     pub fn new(input: &'re mut R) -> Result<Self, NbtError> {
         let next_ty = FieldType::try_from(input.read_u8()?)?;
+        if next_ty != FieldType::Compound {
+            return Err(NbtError::UnexpectedType {
+                actual: next_ty,
+                expected: FieldType::Compound
+            })
+        }
 
         let de = Deserializer {
             input,
@@ -79,7 +85,8 @@ where
         let mut buf = vec![0; len as usize];
         de.input.read_exact(&mut buf)?;
 
-        // let _name = String::from_utf8(buf)?;
+        let name = String::from_utf8(buf)?;
+        println!("{name:?}");
 
         Ok(de)
     }
@@ -419,13 +426,14 @@ where
     }
 
     #[inline]
-    fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value, NbtError>
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, NbtError>
     where
         V: Visitor<'de>,
     {
-        Err(NbtError::Unsupported(
-            "Deserializing Options is not supported",
-        ))
+        // This is only used to represent possibly missing fields.
+        // If this code is reached, it means the key was found and the field exists.
+        // Therefore this is always some.
+        visitor.visit_some(self)
     }
 
     fn deserialize_unit<V>(self, _visitor: V) -> Result<V::Value, NbtError>

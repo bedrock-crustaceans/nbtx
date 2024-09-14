@@ -42,6 +42,26 @@ pub enum Value {
     LongArray(Vec<i64>),
 }
 
+impl Value {
+    #[inline]
+    pub fn discriminant(&self) -> u8 {
+        match self {
+            Self::Byte(_) => 1,
+            Self::Short(_) => 2,
+            Self::Int(_) => 3,
+            Self::Long(_) => 4,
+            Self::Float(_) => 5,
+            Self::Double(_) => 6,
+            Self::ByteArray(_) => 7,
+            Self::String(_) => 8,
+            Self::List(_) => 9,
+            Self::Compound(_) => 10,
+            Self::IntArray(_) => 11,
+            Self::LongArray(_) => 12
+        }
+    }
+}
+
 macro_rules! impl_access_fns {
     ($($tag: ident = $ty: ty),+) => {
         $(paste::paste! {
