@@ -56,7 +56,7 @@ macro_rules! forward_unsupported_field {
 ///  }
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbt::to_be_bytes(&data).unwrap();
+///  let encoded = nbt::to_bytes::<nbt::BigEndian, _>(&data).unwrap();
 /// # }
 /// ```
 pub fn to_bytes<E, T>(v: &T) -> Result<Vec<u8>, NbtError>

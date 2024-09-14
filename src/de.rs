@@ -201,10 +201,10 @@ where
 /// # let data = Data {
 /// #   value: String::from("Hello, World!")
 /// # };
-/// # let owned_buffer = nbt::to_var_bytes(&data).unwrap();
+/// # let owned_buffer = nbt::to_net_bytes(&data).unwrap();
 /// # let mut buffer = owned_buffer.as_slice();
 ///
-///  let data: Data = nbt::from_var_bytes(&mut buffer).unwrap();
+///  let data: Data = nbt::from_net_bytes(&mut buffer).unwrap();
 ///
 ///  println!("Got {data:?}!");
 /// # }
