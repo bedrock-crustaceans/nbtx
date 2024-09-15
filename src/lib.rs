@@ -117,10 +117,8 @@ impl TryFrom<u8> for FieldType {
     fn try_from(v: u8) -> Result<Self, Self::Error> {
         const LAST_DISC: u8 = FieldType::LongArray as u8;
         if v > LAST_DISC {
-            panic!("Value: {}", v);
             return Err(NbtError::TypeOutOfRange {
-                actual: 0,
-                backtrace: Backtrace::capture(),
+                actual: v,
             });
         }
 
