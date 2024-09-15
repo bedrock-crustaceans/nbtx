@@ -1,5 +1,4 @@
 use byteorder::BigEndian;
-use nbtx::NbtError;
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 
@@ -50,15 +49,9 @@ fn main() {
     };
 
     let bytes = nbtx::to_bytes::<BigEndian>(&rusty_burger).unwrap();
+    let mut bytes = Cursor::new(bytes.as_slice());
 
-    println!("{bytes:?}");
+    let dish: Dish = nbtx::from_bytes::<BigEndian, Dish>(&mut bytes).unwrap();
 
-    let dish: Result<Dish, NbtError> =
-        nbtx::from_bytes::<BigEndian, Dish>(&mut Cursor::new(bytes.as_slice()));
-    match dish {
-        Err(err) => println!("{err}"),
-        Ok(dish) => println!("{dish:?}"),
-    }
-
-    //assert_eq!(dish, rusty_burger);
+    assert_eq!(dish, rusty_burger);
 }
