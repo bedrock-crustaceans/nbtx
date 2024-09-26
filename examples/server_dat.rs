@@ -27,7 +27,7 @@ struct ServerDatItem {
 }
 
 fn main() {
-    let servers_dat = include_bytes!("server_dat.rs");
+    let servers_dat = include_bytes!("servers.dat");
     let mut servers_dat = Cursor::new(servers_dat.as_slice());
 
     let server_dat: ServerDat = nbtx::from_bytes::<BigEndian, _>(&mut servers_dat).unwrap();
