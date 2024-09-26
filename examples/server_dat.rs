@@ -20,10 +20,10 @@ struct ServerDat {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ServerDatItem {
-    icon: String,
+    icon: Option<String>,
     ip: String,
     name: String,
-    accept_textures: bool,
+    accept_textures: Option<bool>,
 }
 
 fn main() {
