@@ -85,7 +85,7 @@ where
 ///  nbtx::to_bytes_in::<nbtx::BigEndian>(&mut writer, &data).unwrap();
 /// # }
 /// ```
-pub fn to_bytes_in<E>(writer: impl WriteBytesExt, v: &(impl Serialize + ?Sized)) -> Result<(), NbtError>
+pub fn to_bytes_in<E>(writer: &mut impl WriteBytesExt, v: &(impl Serialize + ?Sized)) -> Result<(), NbtError>
 where
     E: EndiannessImpl,
 {
@@ -146,7 +146,7 @@ where
 /// # }
 /// ```
 #[inline]
-pub fn to_net_bytes_in<T, W>(writer: W, v: &T) -> Result<(), NbtError>
+pub fn to_net_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), NbtError>
 where
     W: WriteBytesExt,
     T: ?Sized + Serialize,
@@ -205,7 +205,7 @@ where
 /// # }
 /// ```
 #[inline]
-pub fn to_be_bytes_in<T, W>(writer: W, v: &T) -> Result<(), NbtError>
+pub fn to_be_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), NbtError>
 where
     W: WriteBytesExt,
     T: ?Sized + Serialize,
@@ -264,7 +264,7 @@ where
 /// # }
 /// ```
 #[inline]
-pub fn to_le_bytes_in<T, W>(writer: W, v: &T) -> Result<(), NbtError>
+pub fn to_le_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), NbtError>
 where
     W: WriteBytesExt,
     T: ?Sized + Serialize,
