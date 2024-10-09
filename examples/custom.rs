@@ -1,5 +1,3 @@
-use byteorder::BigEndian;
-use nbtx::Value;
 use std::collections::HashMap;
 use std::io::Cursor;
 
