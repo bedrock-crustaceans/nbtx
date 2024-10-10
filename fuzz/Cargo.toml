@@ -1,0 +1,35 @@
+[package]
+name = "nbtx-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.nbtx]
+path = ".."
+
+[[bin]]
+name = "nbtx_le"
+path = "fuzz_targets/nbtx_le.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nbtx_be"
+path = "fuzz_targets/nbtx_be.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nbtx_var"
+path = "fuzz_targets/nbtx_var.rs"
+test = false
+doc = false
+bench = false
