@@ -86,7 +86,6 @@ where
         de.input.read_exact(&mut buf)?;
 
         let name = String::from_utf8(buf)?;
-        println!("{name:?}");
 
         Ok(de)
     }
