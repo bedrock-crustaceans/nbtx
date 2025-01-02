@@ -14,7 +14,7 @@ mod block_version {
     pub fn serialize<S: Serializer>(v: &Option<[u8; 4]>, ser: S) -> Result<S::Ok, S::Error> {
         match v {
             Some(b) => ser.serialize_i32(i32::from_be_bytes(*b)),
-            _ => ser.serialize_none()
+            _ => ser.serialize_none(),
         }
     }
 }
@@ -24,7 +24,7 @@ struct Block {
     pub name: String,
     #[serde(with = "block_version")]
     pub version: Option<[u8; 4]>,
-    pub states: HashMap<String, nbtx::Value>
+    pub states: HashMap<String, nbtx::Value>,
 }
 
 fn main() {
@@ -33,10 +33,11 @@ fn main() {
         version: Some([1, 20, 1, 0]),
         states: HashMap::from([
             ("bool_field".into(), nbtx::Value::Byte(1)),
-            ("list_field".into(), nbtx::Value::List(vec![
-                nbtx::Value::Float(42.0), nbtx::Value::Float(45.0)
-            ]))
-        ])
+            (
+                "list_field".into(),
+                nbtx::Value::List(vec![nbtx::Value::Float(42.0), nbtx::Value::Float(45.0)]),
+            ),
+        ]),
     };
 
     let bytes = nbtx::to_be_bytes(&block).unwrap();

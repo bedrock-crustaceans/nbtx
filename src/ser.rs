@@ -81,11 +81,14 @@ where
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
 ///  let mut writer = Cursor::new(Vec::new());
-/// 
+///
 ///  nbtx::to_bytes_in::<nbtx::BigEndian>(&mut writer, &data).unwrap();
 /// # }
 /// ```
-pub fn to_bytes_in<E>(writer: &mut impl WriteBytesExt, v: &(impl Serialize + ?Sized)) -> Result<(), NbtError>
+pub fn to_bytes_in<E>(
+    writer: &mut impl WriteBytesExt,
+    v: &(impl Serialize + ?Sized),
+) -> Result<(), NbtError>
 where
     E: EndiannessImpl,
 {
@@ -141,7 +144,7 @@ where
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
 ///  let mut writer = Cursor::new(Vec::new());
-/// 
+///
 ///  let encoded = nbtx::to_net_bytes_in(&mut writer, &data).unwrap();
 /// # }
 /// ```
@@ -200,7 +203,7 @@ where
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
 ///  let mut writer = Cursor::new(Vec::new());
-/// 
+///
 ///  let encoded = nbtx::to_be_bytes_in(&mut writer, &data).unwrap();
 /// # }
 /// ```
@@ -259,7 +262,7 @@ where
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
 ///  let mut writer = Cursor::new(Vec::new());
-/// 
+///
 ///  let encoded = nbtx::to_le_bytes_in(&mut writer, &data).unwrap();
 /// # }
 /// ```

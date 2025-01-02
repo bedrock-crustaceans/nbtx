@@ -7,7 +7,9 @@ use byteorder::BigEndian;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    from_be_bytes, from_le_bytes, from_net_bytes, ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes}, NbtError, NetworkLittleEndian, Value
+    from_be_bytes, from_le_bytes, from_net_bytes,
+    ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes},
+    NbtError, NetworkLittleEndian, Value,
 };
 
 const BIG_TEST_NBT: &[u8] = include_bytes!("../test/bigtest.nbt");

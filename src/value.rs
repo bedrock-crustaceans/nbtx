@@ -57,7 +57,7 @@ impl Value {
             Self::List(_) => 9,
             Self::Compound(_) => 10,
             Self::IntArray(_) => 11,
-            Self::LongArray(_) => 12
+            Self::LongArray(_) => 12,
         }
     }
 }

@@ -62,8 +62,8 @@ where
         if next_ty != FieldType::Compound {
             return Err(NbtError::UnexpectedType {
                 actual: next_ty,
-                expected: FieldType::Compound
-            })
+                expected: FieldType::Compound,
+            });
         }
 
         let de = Deserializer {
