@@ -314,7 +314,7 @@ where
     }
 }
 
-impl<'a, W, E> ser::Serializer for &'a mut Serializer<W, E>
+impl<W, E> ser::Serializer for &mut Serializer<W, E>
 where
     E: EndiannessImpl,
     W: WriteBytesExt,
@@ -558,7 +558,7 @@ where
     }
 }
 
-impl<'a, W, F> SerializeSeq for &'a mut Serializer<W, F>
+impl<W, F> SerializeSeq for &mut Serializer<W, F>
 where
     W: WriteBytesExt,
     F: EndiannessImpl,
@@ -592,7 +592,7 @@ where
     }
 }
 
-impl<'a, W, M> SerializeTuple for &'a mut Serializer<W, M>
+impl<W, M> SerializeTuple for &mut Serializer<W, M>
 where
     W: WriteBytesExt,
     M: EndiannessImpl,
@@ -626,7 +626,7 @@ where
     }
 }
 
-impl<'a, W, M> SerializeMap for &'a mut Serializer<W, M>
+impl<W, M> SerializeMap for &mut Serializer<W, M>
 where
     W: WriteBytesExt,
     M: EndiannessImpl,
@@ -673,7 +673,7 @@ where
     }
 }
 
-impl<'a, W, M> SerializeStruct for &'a mut Serializer<W, M>
+impl<W, M> SerializeStruct for &mut Serializer<W, M>
 where
     W: WriteBytesExt,
     M: EndiannessImpl,
@@ -732,7 +732,7 @@ where
     }
 }
 
-impl<'a, W, F> ser::Serializer for FieldTypeSerializer<'a, W, F>
+impl<W, F> ser::Serializer for FieldTypeSerializer<'_, W, F>
 where
     W: WriteBytesExt,
     F: EndiannessImpl,
@@ -910,7 +910,7 @@ where
     }
 }
 
-impl<'a, W, F> SerializeSeq for FieldTypeSerializer<'a, W, F>
+impl<W, F> SerializeSeq for FieldTypeSerializer<'_, W, F>
 where
     W: WriteBytesExt,
     F: EndiannessImpl,
@@ -932,7 +932,7 @@ where
     }
 }
 
-impl<'a, W, F> SerializeTuple for FieldTypeSerializer<'a, W, F>
+impl<W, F> SerializeTuple for FieldTypeSerializer<'_, W, F>
 where
     W: WriteBytesExt,
     F: EndiannessImpl,
@@ -954,7 +954,7 @@ where
     }
 }
 
-impl<'a, W, F> SerializeMap for FieldTypeSerializer<'a, W, F>
+impl<W, F> SerializeMap for FieldTypeSerializer<'_, W, F>
 where
     W: WriteBytesExt,
     F: EndiannessImpl,
@@ -984,7 +984,7 @@ where
     }
 }
 
-impl<'a, W, F> SerializeStruct for FieldTypeSerializer<'a, W, F>
+impl<W, F> SerializeStruct for FieldTypeSerializer<'_, W, F>
 where
     W: WriteBytesExt,
     F: EndiannessImpl,

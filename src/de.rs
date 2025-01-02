@@ -215,7 +215,7 @@ where
     from_bytes::<NetworkLittleEndian, T>(reader)
 }
 
-impl<'de, 're, 'a, F, R> de::Deserializer<'de> for &'a mut Deserializer<'re, 'de, F, R>
+impl<'de, 'a, F, R> de::Deserializer<'de> for &'a mut Deserializer<'_, 'de, F, R>
 where
     R: ReadBytesExt,
     F: EndiannessImpl + 'a,
@@ -613,7 +613,7 @@ where
     }
 }
 
-impl<'de, 're, 'a, F, R> SeqAccess<'de> for SeqDeserializer<'a, 're, 'de, F, R>
+impl<'de, F, R> SeqAccess<'de> for SeqDeserializer<'_, '_, 'de, F, R>
 where
     R: ReadBytesExt,
     F: EndiannessImpl,
@@ -659,7 +659,7 @@ where
     }
 }
 
-impl<'de, 're, 'a, F, R> MapAccess<'de> for MapDeserializer<'a, 're, 'de, F, R>
+impl<'de, F, R> MapAccess<'de> for MapDeserializer<'_, '_, 'de, F, R>
 where
     R: ReadBytesExt,
     F: EndiannessImpl,
