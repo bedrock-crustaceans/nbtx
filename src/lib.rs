@@ -5,7 +5,6 @@ pub use crate::ser::{to_bytes_in, to_bytes, to_be_bytes, to_be_bytes_in, to_le_b
 pub use crate::value::Value;
 pub use byteorder::{BigEndian, LittleEndian};
 
-use std::backtrace::Backtrace;
 use std::borrow::Cow;
 use std::fmt::{Debug, Display};
 
