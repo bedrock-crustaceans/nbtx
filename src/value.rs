@@ -127,8 +127,7 @@ impl PartialEq<Value> for Value {
             Value::Long(lhs) => rhs.as_long() == Some(lhs),
             Value::Float(lhs) => rhs.as_float() == Some(lhs),
             Value::Double(lhs) => rhs.as_double() == Some(lhs),
-            Value::ByteArray(lhs) => rhs
-                .as_byte_array().is_some_and(|rhs| lhs.as_slice() == rhs),
+            Value::ByteArray(lhs) => rhs.as_byte_array().is_some_and(|rhs| lhs.as_slice() == rhs),
             Value::String(lhs) => rhs.as_string() == Some(lhs),
             Value::List(lhs) => rhs.as_list() == Some(lhs),
             Value::Compound(lhs) => rhs.as_compound() == Some(lhs),
