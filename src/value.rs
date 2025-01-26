@@ -401,12 +401,23 @@ impl Hash for Value {
             Value::Long(v) => state.write_i64(*v),
             Value::String(v) => state.write(v.as_bytes()),
             Value::Float(v) => {
+                // IEEE floats have - and + 0 which are the same value but have different bytes meaning you need a fallback like this
+                let bytes = if *v == (-0f32) {
+                    0f32.to_le_bytes()
+                } else {
+                    v.to_le_bytes()
+                };
                 // f32 does not implement Hash so simply hash the byte repr.
-                state.write(&v.to_le_bytes());
+                state.write(&bytes);
             }
             Value::Double(v) => {
+                let bytes = if *v == (-0f64) {
+                    0f64.to_le_bytes()
+                } else {
+                    v.to_le_bytes()
+                };
                 // f64 does not implement Hash so simply hash the byte repr.
-                state.write(&v.to_le_bytes());
+                state.write(&bytes);
             }
             Value::Compound(map) => {
                 for (k, v) in map {
