@@ -402,7 +402,7 @@ impl Hash for Value {
             Value::String(v) => state.write(v.as_bytes()),
             Value::Float(v) => {
                 // f32 does not implement Hash, so simply hash the byte representation
-                // IEEE floats have + 0 and + 0, which are the same value but have different byte representations
+                // IEEE floats have + 0 and - 0, which are the same value but have different byte representations
                 let bytes = if *v == (-0_f32) {
                     0_f32.to_le_bytes()
                 } else {
@@ -411,8 +411,8 @@ impl Hash for Value {
                 state.write(&bytes);
             }
             Value::Double(v) => {
-                // f32 does not implement Hash, so simply hash the byte representation
-                // IEEE floats have + 0 and + 0, which are the same value but have different byte representations
+                // f64 does not implement Hash, so simply hash the byte representation
+                // IEEE floats have + 0 and - 0, which are the same value but have different byte representations
                 let bytes = if *v == (-0_f64) {
                     0_f64.to_le_bytes()
                 } else {
