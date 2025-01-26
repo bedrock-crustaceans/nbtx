@@ -57,7 +57,7 @@ impl Value {
             Self::List(_) => 9,
             Self::Compound(_) => 10,
             Self::IntArray(_) => 11,
-            Self::LongArray(_) => 12
+            Self::LongArray(_) => 12,
         }
     }
 }
@@ -121,20 +121,18 @@ impl PartialEq<Value> for Value {
     #[inline]
     fn eq(&self, rhs: &Value) -> bool {
         match self {
-            Value::Byte(lhs) => rhs.as_byte().map_or(false, |rhs| lhs == rhs),
-            Value::Short(lhs) => rhs.as_short().map_or(false, |rhs| lhs == rhs),
-            Value::Int(lhs) => rhs.as_int().map_or(false, |rhs| lhs == rhs),
-            Value::Long(lhs) => rhs.as_long().map_or(false, |rhs| lhs == rhs),
-            Value::Float(lhs) => rhs.as_float().map_or(false, |rhs| lhs == rhs),
-            Value::Double(lhs) => rhs.as_double().map_or(false, |rhs| lhs == rhs),
-            Value::ByteArray(lhs) => rhs
-                .as_byte_array()
-                .map_or(false, |rhs| lhs.as_slice() == rhs),
-            Value::String(lhs) => rhs.as_string().map_or(false, |rhs| lhs == rhs),
-            Value::List(lhs) => rhs.as_list().map_or(false, |rhs| lhs == rhs),
-            Value::Compound(lhs) => rhs.as_compound().map_or(false, |rhs| lhs == rhs),
-            Value::IntArray(lhs) => rhs.as_int_array().map_or(false, |rhs| lhs == rhs),
-            Value::LongArray(lhs) => rhs.as_long_array().map_or(false, |rhs| lhs == rhs),
+            Value::Byte(lhs) => rhs.as_byte() == Some(lhs),
+            Value::Short(lhs) => rhs.as_short() == Some(lhs),
+            Value::Int(lhs) => rhs.as_int() == Some(lhs),
+            Value::Long(lhs) => rhs.as_long() == Some(lhs),
+            Value::Float(lhs) => rhs.as_float() == Some(lhs),
+            Value::Double(lhs) => rhs.as_double() == Some(lhs),
+            Value::ByteArray(lhs) => rhs.as_byte_array().is_some_and(|rhs| lhs.as_slice() == rhs),
+            Value::String(lhs) => rhs.as_string() == Some(lhs),
+            Value::List(lhs) => rhs.as_list() == Some(lhs),
+            Value::Compound(lhs) => rhs.as_compound() == Some(lhs),
+            Value::IntArray(lhs) => rhs.as_int_array() == Some(lhs),
+            Value::LongArray(lhs) => rhs.as_long_array() == Some(lhs),
         }
     }
 }
@@ -142,252 +140,252 @@ impl PartialEq<Value> for Value {
 impl PartialEq<i8> for Value {
     #[inline]
     fn eq(&self, rhs: &i8) -> bool {
-        self.as_byte().map_or(false, |lhs| lhs == rhs)
+        self.as_byte() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<i8> for &'a Value {
+impl PartialEq<i8> for &Value {
     #[inline]
     fn eq(&self, rhs: &i8) -> bool {
-        self.as_byte().map_or(false, |lhs| lhs == rhs)
+        self.as_byte() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<i8> for &'a mut Value {
+impl PartialEq<i8> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &i8) -> bool {
-        self.as_byte().map_or(false, |lhs| lhs == rhs)
+        self.as_byte() == Some(rhs)
     }
 }
 
 impl PartialEq<i16> for Value {
     #[inline]
     fn eq(&self, rhs: &i16) -> bool {
-        self.as_short().map_or(false, |lhs| lhs == rhs)
+        self.as_short() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<i16> for &'a Value {
+impl PartialEq<i16> for &Value {
     #[inline]
     fn eq(&self, rhs: &i16) -> bool {
-        self.as_short().map_or(false, |lhs| lhs == rhs)
+        self.as_short() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<i16> for &'a mut Value {
+impl PartialEq<i16> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &i16) -> bool {
-        self.as_short().map_or(false, |lhs| lhs == rhs)
+        self.as_short() == Some(rhs)
     }
 }
 
 impl PartialEq<i32> for Value {
     #[inline]
     fn eq(&self, rhs: &i32) -> bool {
-        self.as_int().map_or(false, |lhs| lhs == rhs)
+        self.as_int() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<i32> for &'a Value {
+impl PartialEq<i32> for &Value {
     #[inline]
     fn eq(&self, rhs: &i32) -> bool {
-        self.as_int().map_or(false, |lhs| lhs == rhs)
+        self.as_int() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<i32> for &'a mut Value {
+impl PartialEq<i32> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &i32) -> bool {
-        self.as_int().map_or(false, |lhs| lhs == rhs)
+        self.as_int() == Some(rhs)
     }
 }
 
 impl PartialEq<i64> for Value {
     #[inline]
     fn eq(&self, rhs: &i64) -> bool {
-        self.as_long().map_or(false, |lhs| lhs == rhs)
+        self.as_long() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<i64> for &'a Value {
+impl PartialEq<i64> for &Value {
     #[inline]
     fn eq(&self, rhs: &i64) -> bool {
-        self.as_long().map_or(false, |lhs| lhs == rhs)
+        self.as_long() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<i64> for &'a mut Value {
+impl PartialEq<i64> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &i64) -> bool {
-        self.as_long().map_or(false, |lhs| lhs == rhs)
+        self.as_long() == Some(rhs)
     }
 }
 
 impl PartialEq<f32> for Value {
     #[inline]
     fn eq(&self, rhs: &f32) -> bool {
-        self.as_float().map_or(false, |lhs| lhs == rhs)
+        self.as_float() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<f32> for &'a Value {
+impl PartialEq<f32> for &Value {
     #[inline]
     fn eq(&self, rhs: &f32) -> bool {
-        self.as_float().map_or(false, |lhs| lhs == rhs)
+        self.as_float() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<f32> for &'a mut Value {
+impl PartialEq<f32> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &f32) -> bool {
-        self.as_float().map_or(false, |lhs| lhs == rhs)
+        self.as_float() == Some(rhs)
     }
 }
 
 impl PartialEq<f64> for Value {
     #[inline]
     fn eq(&self, rhs: &f64) -> bool {
-        self.as_double().map_or(false, |lhs| lhs == rhs)
+        self.as_double() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<f64> for &'a Value {
+impl PartialEq<f64> for &Value {
     #[inline]
     fn eq(&self, rhs: &f64) -> bool {
-        self.as_double().map_or(false, |lhs| lhs == rhs)
+        self.as_double() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<f64> for &'a mut Value {
+impl PartialEq<f64> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &f64) -> bool {
-        self.as_double().map_or(false, |lhs| lhs == rhs)
+        self.as_double() == Some(rhs)
     }
 }
 
 impl PartialEq<&[u8]> for Value {
     #[inline]
     fn eq(&self, rhs: &&[u8]) -> bool {
-        self.as_byte_array().map_or(false, |lhs| lhs == rhs)
+        self.as_byte_array().is_some_and(|lhs| lhs == rhs)
     }
 }
 
 impl PartialEq<&[u8]> for &Value {
     #[inline]
     fn eq(&self, rhs: &&[u8]) -> bool {
-        self.as_byte_array().map_or(false, |lhs| lhs == rhs)
+        self.as_byte_array().is_some_and(|lhs| lhs == rhs)
     }
 }
 
 impl PartialEq<&[u8]> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &&[u8]) -> bool {
-        self.as_byte_array().map_or(false, |lhs| lhs == rhs)
+        self.as_byte_array().is_some_and(|lhs| lhs == rhs)
     }
 }
 
 impl PartialEq<&str> for Value {
     #[inline]
     fn eq(&self, rhs: &&str) -> bool {
-        self.as_string().map_or(false, |lhs| lhs == rhs)
+        self.as_string().is_some_and(|lhs| lhs == rhs)
     }
 }
 
-impl<'a> PartialEq<&str> for &'a Value {
+impl PartialEq<&str> for &Value {
     #[inline]
     fn eq(&self, rhs: &&str) -> bool {
-        self.as_string().map_or(false, |lhs| lhs == rhs)
+        self.as_string().is_some_and(|lhs| lhs == rhs)
     }
 }
 
-impl<'a> PartialEq<&str> for &'a mut Value {
+impl PartialEq<&str> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &&str) -> bool {
-        self.as_string().map_or(false, |lhs| lhs == rhs)
+        self.as_string().is_some_and(|lhs| lhs == rhs)
     }
 }
 
 impl PartialEq<&[Value]> for Value {
     #[inline]
     fn eq(&self, rhs: &&[Value]) -> bool {
-        self.as_list().map_or(false, |lhs| lhs == rhs)
+        self.as_list().is_some_and(|lhs| lhs == rhs)
     }
 }
 
-impl<'a> PartialEq<&[Value]> for &'a Value {
+impl PartialEq<&[Value]> for &Value {
     #[inline]
     fn eq(&self, rhs: &&[Value]) -> bool {
-        self.as_list().map_or(false, |lhs| lhs == rhs)
+        self.as_list().is_some_and(|lhs| lhs == rhs)
     }
 }
 
-impl<'a> PartialEq<&[Value]> for &'a mut Value {
+impl PartialEq<&[Value]> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &&[Value]) -> bool {
-        self.as_list().map_or(false, |lhs| lhs == rhs)
+        self.as_list().is_some_and(|lhs| lhs == rhs)
     }
 }
 
 impl PartialEq<HashMap<String, Value>> for Value {
     #[inline]
     fn eq(&self, rhs: &HashMap<String, Value>) -> bool {
-        self.as_compound().map_or(false, |lhs| lhs == rhs)
+        self.as_compound() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<HashMap<String, Value>> for &'a Value {
+impl PartialEq<HashMap<String, Value>> for &Value {
     #[inline]
     fn eq(&self, rhs: &HashMap<String, Value>) -> bool {
-        self.as_compound().map_or(false, |lhs| lhs == rhs)
+        self.as_compound() == Some(rhs)
     }
 }
 
-impl<'a> PartialEq<HashMap<String, Value>> for &'a mut Value {
+impl PartialEq<HashMap<String, Value>> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &HashMap<String, Value>) -> bool {
-        self.as_compound().map_or(false, |lhs| lhs == rhs)
+        self.as_compound() == Some(rhs)
     }
 }
 
 impl PartialEq<&[i32]> for Value {
     #[inline]
     fn eq(&self, rhs: &&[i32]) -> bool {
-        self.as_int_array().map_or(false, |lhs| lhs == rhs)
+        self.as_int_array().is_some_and(|lhs| lhs == rhs)
     }
 }
 
-impl<'a> PartialEq<&[i32]> for &'a Value {
+impl PartialEq<&[i32]> for &Value {
     #[inline]
     fn eq(&self, rhs: &&[i32]) -> bool {
-        self.as_int_array().map_or(false, |lhs| lhs == rhs)
+        self.as_int_array().is_some_and(|lhs| lhs == rhs)
     }
 }
 
-impl<'a> PartialEq<&[i32]> for &'a mut Value {
+impl PartialEq<&[i32]> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &&[i32]) -> bool {
-        self.as_int_array().map_or(false, |lhs| lhs == rhs)
+        self.as_int_array().is_some_and(|lhs| lhs == rhs)
     }
 }
 
 impl PartialEq<&[i64]> for Value {
     #[inline]
     fn eq(&self, rhs: &&[i64]) -> bool {
-        self.as_long_array().map_or(false, |lhs| lhs == rhs)
+        self.as_long_array().is_some_and(|lhs| lhs == rhs)
     }
 }
 
-impl<'a> PartialEq<&[i64]> for &'a Value {
+impl PartialEq<&[i64]> for &Value {
     #[inline]
     fn eq(&self, rhs: &&[i64]) -> bool {
-        self.as_long_array().map_or(false, |lhs| lhs == rhs)
+        self.as_long_array().is_some_and(|lhs| lhs == rhs)
     }
 }
 
-impl<'a> PartialEq<&[i64]> for &'a mut Value {
+impl PartialEq<&[i64]> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &&[i64]) -> bool {
-        self.as_long_array().map_or(false, |lhs| lhs == rhs)
+        self.as_long_array().is_some_and(|lhs| lhs == rhs)
     }
 }
 

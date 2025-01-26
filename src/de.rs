@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::io::{Cursor, Read, Seek};
 use std::marker::PhantomData;
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
@@ -8,7 +7,6 @@ use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{de, Deserialize};
 use varint_rs::VarintReader;
 
-use crate::error::StreamError;
 use crate::{EndiannessImpl, FieldType, NbtError, NetworkLittleEndian, Variant};
 
 /// Verifies that the deserialized type is equal to the expected type.
@@ -64,8 +62,8 @@ where
         if next_ty != FieldType::Compound {
             return Err(NbtError::UnexpectedType {
                 actual: next_ty,
-                expected: FieldType::Compound
-            })
+                expected: FieldType::Compound,
+            });
         }
 
         let de = Deserializer {
@@ -85,7 +83,7 @@ where
         let mut buf = vec![0; len as usize];
         de.input.read_exact(&mut buf)?;
 
-        let name = String::from_utf8(buf)?;
+        let _name = String::from_utf8(buf)?;
 
         Ok(de)
     }
@@ -217,7 +215,7 @@ where
     from_bytes::<NetworkLittleEndian, T>(reader)
 }
 
-impl<'de, 're, 'a, F, R> de::Deserializer<'de> for &'a mut Deserializer<'re, 'de, F, R>
+impl<'de, 'a, F, R> de::Deserializer<'de> for &'a mut Deserializer<'_, 'de, F, R>
 where
     R: ReadBytesExt,
     F: EndiannessImpl + 'a,
@@ -382,7 +380,7 @@ where
         visitor.visit_string(string)
     }
 
-    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, NbtError>
+    fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value, NbtError>
     where
         V: Visitor<'de>,
     {
@@ -615,7 +613,7 @@ where
     }
 }
 
-impl<'de, 're, 'a, F, R> SeqAccess<'de> for SeqDeserializer<'a, 're, 'de, F, R>
+impl<'de, F, R> SeqAccess<'de> for SeqDeserializer<'_, '_, 'de, F, R>
 where
     R: ReadBytesExt,
     F: EndiannessImpl,
@@ -661,7 +659,7 @@ where
     }
 }
 
-impl<'de, 're, 'a, F, R> MapAccess<'de> for MapDeserializer<'a, 're, 'de, F, R>
+impl<'de, F, R> MapAccess<'de> for MapDeserializer<'_, '_, 'de, F, R>
 where
     R: ReadBytesExt,
     F: EndiannessImpl,

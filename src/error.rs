@@ -1,4 +1,4 @@
-use std::{backtrace::Backtrace, borrow::Cow};
+use std::borrow::Cow;
 
 use thiserror::Error;
 
@@ -9,9 +9,7 @@ use crate::FieldType;
 pub enum NbtError {
     /// The encountered NBT tag type is invalid.
     #[error("An unknown tag type was encountered ({actual}), it should be in the range 0-12")]
-    TypeOutOfRange {
-        actual: u8,
-    },
+    TypeOutOfRange { actual: u8 },
     /// Found a type different from the type that was expected.
     #[error("Expected tag of type {expected:?}, received {actual:?}")]
     UnexpectedType {

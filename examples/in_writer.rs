@@ -1,5 +1,5 @@
-use std::io::Write;
 use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
+use std::io::Write;
 
 pub fn main() {
     let mut writer = Vec::new();

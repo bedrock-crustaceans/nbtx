@@ -3,11 +3,13 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 
-use byteorder::{BigEndian, LittleEndian};
+use byteorder::BigEndian;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    de::from_bytes, from_be_bytes, from_le_bytes, from_net_bytes, ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes}, NbtError, NetworkLittleEndian, Value
+    from_be_bytes, from_le_bytes, from_net_bytes,
+    ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes},
+    NbtError, NetworkLittleEndian, Value,
 };
 
 const BIG_TEST_NBT: &[u8] = include_bytes!("../test/bigtest.nbt");
@@ -31,7 +33,7 @@ fn read_write_option() {
     let mut some_ser_slice = Cursor::new(some_ser.as_slice());
 
     let some_de: Value = from_be_bytes(&mut some_ser_slice).unwrap();
-    // dbg!(some_de);
+    dbg!(some_de);
 
     let _none = Optional {
         optional: None,
