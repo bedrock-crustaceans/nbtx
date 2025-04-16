@@ -1,10 +1,9 @@
-use std::collections::{BTreeMap, HashMap};
-use std::fmt;
-use std::hash::{Hash, Hasher};
-use linked_hash_map::LinkedHashMap;
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashMap;
+use std::fmt;
+use std::hash::{Hash, Hasher};
 
 /// General NBT value type that can represent any value.
 ///
@@ -36,10 +35,6 @@ pub enum Value {
     List(Vec<Value>),
     /// Key-value map.
     Compound(HashMap<String, Value>),
-    /// Sorted key-value map.
-    TreeCompound(BTreeMap<String, Value>),
-    /// Linked key-value map.
-    LinkedCompound(LinkedHashMap<String, Value>),
     /// An array of integers.
     IntArray(Vec<i32>),
     /// An array of longs.
@@ -60,8 +55,6 @@ impl Value {
             Self::String(_) => 8,
             Self::List(_) => 9,
             Self::Compound(_) => 10,
-            Self::TreeCompound(_) => 10,
-            Self::LinkedCompound(_) => 10,
             Self::IntArray(_) => 11,
             Self::LongArray(_) => 12,
         }
@@ -117,8 +110,6 @@ impl Value {
         String = String,
         List = Vec<Self>,
         Compound = HashMap<String, Self>,
-        TreeCompound = BTreeMap<String, Self>,
-        LinkedCompound = LinkedHashMap<String, Self>,
         ByteArray = Vec<u8>,
         IntArray = Vec<i32>,
         LongArray = Vec<i64>
@@ -139,8 +130,6 @@ impl PartialEq<Value> for Value {
             Value::String(lhs) => rhs.as_string() == Some(lhs),
             Value::List(lhs) => rhs.as_list() == Some(lhs),
             Value::Compound(lhs) => rhs.as_compound() == Some(lhs),
-            Value::TreeCompound(lhs) => rhs.as_tree_compound() == Some(lhs),
-            Value::LinkedCompound(lhs) => rhs.as_linked_compound() == Some(lhs),
             Value::IntArray(lhs) => rhs.as_int_array() == Some(lhs),
             Value::LongArray(lhs) => rhs.as_long_array() == Some(lhs),
         }
@@ -436,18 +425,6 @@ impl Hash for Value {
                     v.hash(state);
                 }
             }
-            Value::TreeCompound(map) => {
-                for (k, v) in map {
-                    state.write(k.as_bytes());
-                    v.hash(state);
-                }
-            }
-            Value::LinkedCompound(map) => {
-                for (k, v) in map {
-                    state.write(k.as_bytes());
-                    v.hash(state);
-                }
-            }
             Value::List(v) => Self::hash_slice(v, state),
             Value::ByteArray(v) => u8::hash_slice(v, state),
             Value::IntArray(v) => i32::hash_slice(v, state),
@@ -495,20 +472,6 @@ impl Serialize for Value {
             Value::String(string) => ser.serialize_str(string),
             Value::List(seq) => serialize_seq(ser, seq),
             Value::Compound(map) => {
-                let mut map_ser = ser.serialize_map(Some(map.len()))?;
-                for (k, v) in map {
-                    map_ser.serialize_entry(k, v)?;
-                }
-                map_ser.end()
-            }
-            Value::TreeCompound(map) => {
-                let mut map_ser = ser.serialize_map(Some(map.len()))?;
-                for (k, v) in map {
-                    map_ser.serialize_entry(k, v)?;
-                }
-                map_ser.end()
-            }
-            Value::LinkedCompound(map) => {
                 let mut map_ser = ser.serialize_map(Some(map.len()))?;
                 for (k, v) in map {
                     map_ser.serialize_entry(k, v)?;
