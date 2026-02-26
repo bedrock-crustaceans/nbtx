@@ -9,7 +9,7 @@ license = "Apache-2.0"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 paste = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 byteorder = "1.5"
 varint-rs = "2.2"
 
