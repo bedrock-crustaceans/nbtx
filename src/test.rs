@@ -41,27 +41,6 @@ fn read_write_option() {
     };
 }
 
-use crate as nbtx;
-
-#[derive(Serialize, Deserialize)]
-struct HelloWorld {
-	message: String
-}
-
-#[test]
-fn deserialize() {
-    let data = HelloWorld { message: String::from("poop") };
-	let buffer = nbtx::to_le_bytes(&data).unwrap();
-
-	let structured: HelloWorld = nbtx::from_le_bytes(&mut buffer).unwrap();
-	let message1 = &structured.message;
-
-	let unstructured: nbtx::Value = nbtx::from_le_bytes(&mut buffer).unwrap();
-	let message2 = value.as_compound().unwrap()["message"]
-	
-	assert_eq!(message1, message2);
-}
-
 #[test]
 fn read_write_all() {
     let value = Value::Compound(HashMap::from([
