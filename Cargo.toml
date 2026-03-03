@@ -1,5 +1,6 @@
 [package]
 name = "nbtx"
+description = "A high-performance, ergonomic, pure Rust implementation of the Named Binary Tag format"
 version = "1.0.0"
 edition = "2021"
 authors = ["Ruben Adema", "theaddonn <theaddonn@gmail.com>"]
