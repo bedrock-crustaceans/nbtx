@@ -1,7 +1,7 @@
 //! Implements NBT serialisation and deserialization for three different integer encodings.
 
-pub use crate::de::{from_be_bytes, from_bytes, from_le_bytes, from_net_bytes, Deserializer};
-pub use crate::ser::{
+pub use crate::nbt::de::{from_be_bytes, from_bytes, from_le_bytes, from_net_bytes, Deserializer};
+pub use crate::nbt::ser::{
     to_be_bytes, to_be_bytes_in, to_bytes, to_bytes_in, to_le_bytes, to_le_bytes_in, to_net_bytes,
     to_net_bytes_in, Serializer,
 };
@@ -16,9 +16,9 @@ pub use error::NbtError;
 #[cfg(test)]
 mod test;
 
-mod de;
+mod nbt;
+mod snbt;
 mod error;
-mod ser;
 mod value;
 
 mod private {

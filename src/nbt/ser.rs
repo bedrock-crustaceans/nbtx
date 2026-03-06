@@ -16,7 +16,7 @@ macro_rules! forward_unsupported {
             #[inline]
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), NbtError> {
                 Err(NbtError::Unsupported(concat!(
-                    "Serialization of `", stringify!($ty), "` is not supported"
+                    "serialization of `", stringify!($ty), "` is not supported"
                 )))
             }
         )+}
@@ -330,7 +330,7 @@ where
     type SerializeStruct = Self;
     type SerializeStructVariant = Impossible<(), NbtError>;
 
-    forward_unsupported!(char, u8, u16, u32, u64, i128);
+    forward_unsupported!(char, u8, u16, u32, u64, u128, i128);
 
     #[inline]
     fn serialize_bool(self, v: bool) -> Result<(), NbtError> {
@@ -427,46 +427,36 @@ where
     }
 
     fn serialize_none(self) -> Result<(), NbtError> {
-        Err(NbtError::Unsupported(
-            "Serializing Options is not supported",
-        ))
+        self.serialize_unit()
     }
 
-    fn serialize_some<T: Serialize + ?Sized>(self, _value: &T) -> Result<(), NbtError> {
-        Err(NbtError::Unsupported(
-            "Serializing Options is not supported",
-        ))
+    fn serialize_some<T: Serialize + ?Sized>(self, v: &T) -> Result<(), NbtError> {
+        v.serialize(self)
     }
 
     fn serialize_unit(self) -> Result<(), NbtError> {
-        Err(NbtError::Unsupported("Serializing () is not supported"))
+        Ok(())
     }
 
     fn serialize_unit_struct(self, _name: &'static str) -> Result<(), NbtError> {
-        Err(NbtError::Unsupported(
-            "Serializing unit structs is not supported",
-        ))
+        self.serialize_unit()
     }
 
     fn serialize_unit_variant(
         self,
         _name: &'static str,
-        _variant_index: u32,
+        variant_index: u32,
         _variant: &'static str,
     ) -> Result<(), NbtError> {
-        Err(NbtError::Unsupported(
-            "Serializing unit variants is not supported",
-        ))
+        todo!()
     }
 
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
         self,
         _name: &'static str,
-        _value: &T,
+        value: &T,
     ) -> Result<(), NbtError> {
-        Err(NbtError::Unsupported(
-            "Serializing newtype structs is not supported",
-        ))
+        value.serialize(self)
     }
 
     fn serialize_newtype_variant<T: Serialize + ?Sized>(

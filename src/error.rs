@@ -4,6 +4,9 @@ use thiserror::Error;
 
 use crate::FieldType;
 
+
+pub type Result<T> = std::result::Result<T, NbtError>;
+
 /// Errors that can occur while serializing or deserializing NBT data.
 #[derive(Error, Debug, Clone)]
 pub enum NbtError {
@@ -24,6 +27,8 @@ pub enum NbtError {
     /// Any errors related to reading and writing from the stream.
     #[error("{0}")]
     ByteError(#[from] StreamError),
+    #[error("{0}")]
+    Malformed(&'static str),
     /// Other errors that do not fit in any of the previous categories.
     #[error("{0}")]
     Other(Cow<'static, str>),
