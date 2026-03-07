@@ -4,7 +4,6 @@ use thiserror::Error;
 
 use crate::FieldType;
 
-
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur while serializing or deserializing NBT data.
@@ -14,7 +13,9 @@ pub enum Error {
     #[error("An unknown tag type was encountered ({actual}), it should be in the range 0-12")]
     TypeOutOfRange { actual: u8 },
     /// Found a type different from the type that was expected.
-    #[error("Expected tag of type `{expected:?}`, received `{actual:?}` (while deserialising field `{at:?}`)")]
+    #[error(
+        "Expected tag of type `{expected:?}`, received `{actual:?}` (while deserialising field `{at:?}`)"
+    )]
     UnexpectedType {
         /// Type that the deserializer was expecting to find.
         expected: FieldType,
@@ -22,7 +23,7 @@ pub enum Error {
         actual: FieldType,
         /// The struct field that the error occurred at.
         /// This is provided on a best-effort basis and may not always be accurate.
-        at: Option<String>
+        at: Option<String>,
     },
     /// The requested operation is not supported.
     #[error("{0}")]

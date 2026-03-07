@@ -26,13 +26,10 @@ nbtx = "1.0.0"
 and then start deserialising with `nbtx`. Or take a look at any of the other [`examples`](https://github.com/bedrock-crustaceans/nbtx/tree/master/examples)
 
 ## Contributing 
-Contributions are welcome! If you'd like to help us improve **nbtx**, feel free to:
-1. Fork the repository.
-2. Create a feature branch
-3. Submit a Pull Request
+We welcome contributions of all kinds, including bug fixes, new features, docs updates, and improvements across crates.  
+Please read the full contribution guide here: **[CONTRIBUTING.md](CONTRIBUTING.md)**  
 
-Join our [`Discord Server`](https://discord.com/invite/VCVcrvt3JC) for collaboration and support. 
-
+For guidance or collaboration, connect with the community on Discord. 
 
 
 
@@ -41,4 +38,3 @@ Join our [`Discord Server`](https://discord.com/invite/VCVcrvt3JC) for collabora
 
 ## License
 This project is licensed under the **Apache License 2.0**. See the [LICENSE](https://github.com/bedrock-crustaceans/nbtx/tree/master/LICENSE) for the details.
-

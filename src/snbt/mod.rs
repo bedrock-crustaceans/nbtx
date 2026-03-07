@@ -7,24 +7,29 @@ mod tests {
 
     use serde::{Deserialize, Serialize};
 
-    use crate::{Value, snbt::{de::SnbtDeserializer, ser::Serializer}};
+    use crate::{
+        Value,
+        snbt::{de::SnbtDeserializer, ser::Serializer},
+    };
 
     #[derive(Debug, Copy, Clone, serde::Serialize)]
     enum Test {
-        A, B, C
+        A,
+        B,
+        C,
     }
 
     #[derive(serde::Serialize)]
     struct Data {
         value: Test,
-        tuple: [u8; 5]
+        tuple: [u8; 5],
     }
 
     #[test]
     fn simple_snbt() {
         let value = Data {
             value: Test::A,
-            tuple: [1; 5]
+            tuple: [1; 5],
         };
 
         let mut ser = Serializer::new();
