@@ -16,7 +16,7 @@ macro_rules! is_ty {
             return Err(Error::UnexpectedType {
                 expected: FieldType::$expected,
                 actual: $actual,
-                at: $field_name.clone(),
+                at: $field_name.take().unwrap_or_else(|| String::from("unknown")),
             });
         }
     };
@@ -31,9 +31,10 @@ macro_rules! forward_unsupported {
             where
                 V: Visitor<'de>
             {
-                return Err(Error::Unsupported(
-                    concat!("Deserialization of `", stringify!($ty), "` is not supported")
-                ));
+                Err(Error::Unsupported {
+                    op: concat!("deserialization of `", stringify!($ty), "` is not supported"),
+                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+                })
             }
         )+}
     }
@@ -49,7 +50,7 @@ where
     input: &'re mut R,
     next_ty: FieldType,
     is_key: bool,
-    current_key: Option<String>,
+    curr_key: Option<String>,
     _marker: PhantomData<&'de F>,
 }
 
@@ -65,7 +66,7 @@ where
             return Err(Error::UnexpectedType {
                 actual: next_ty,
                 expected: FieldType::Compound,
-                at: None,
+                at: String::from("root"),
             });
         }
 
@@ -73,7 +74,7 @@ where
             input,
             next_ty,
             is_key: false,
-            current_key: None,
+            curr_key: None,
             _marker: PhantomData,
         };
 
@@ -236,7 +237,7 @@ where
             self.deserialize_string(visitor)
         } else {
             match self.next_ty {
-                FieldType::End => Err(Error::Other(Cow::Borrowed("Encountered unmatched end tag"))),
+                FieldType::End => Err(Error::Other(Cow::Borrowed("encountered unmatched end tag"))),
                 FieldType::Byte => self.deserialize_i8(visitor),
                 FieldType::Short => self.deserialize_i16(visitor),
                 FieldType::Int => self.deserialize_i32(visitor),
@@ -258,7 +259,7 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(Byte, self.current_key, self.next_ty);
+        is_ty!(Byte, self.curr_key, self.next_ty);
 
         let n = self.input.read_u8()? != 0;
         visitor.visit_bool(n)
@@ -269,7 +270,7 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(Byte, self.current_key, self.next_ty);
+        is_ty!(Byte, self.curr_key, self.next_ty);
 
         let n = self.input.read_i8()?;
         visitor.visit_i8(n)
@@ -280,7 +281,7 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(Short, self.current_key, self.next_ty);
+        is_ty!(Short, self.curr_key, self.next_ty);
 
         let n = match F::AS_ENUM {
             Variant::BigEndian => self.input.read_i16::<BigEndian>(),
@@ -295,7 +296,7 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(Int, self.current_key, self.next_ty);
+        is_ty!(Int, self.curr_key, self.next_ty);
 
         let n = match F::AS_ENUM {
             Variant::BigEndian => self.input.read_i32::<BigEndian>(),
@@ -311,7 +312,7 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(Long, self.current_key, self.next_ty);
+        is_ty!(Long, self.curr_key, self.next_ty);
 
         let n = match F::AS_ENUM {
             Variant::BigEndian => self.input.read_i64::<BigEndian>(),
@@ -327,7 +328,7 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(Float, self.current_key, self.next_ty);
+        is_ty!(Float, self.curr_key, self.next_ty);
 
         let n = match F::AS_ENUM {
             Variant::BigEndian => self.input.read_f32::<BigEndian>(),
@@ -342,7 +343,7 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(Double, self.current_key, self.next_ty);
+        is_ty!(Double, self.curr_key, self.next_ty);
 
         let n = match F::AS_ENUM {
             Variant::BigEndian => self.input.read_f64::<BigEndian>(),
@@ -357,9 +358,10 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported(
-            "Deserializing string references is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "deserializing string references is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     #[inline]
@@ -367,7 +369,7 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(String, self.current_key, self.next_ty);
+        is_ty!(String, self.curr_key, self.next_ty);
 
         let len = match F::AS_ENUM {
             Variant::BigEndian => self.input.read_u16::<BigEndian>()? as u32,
@@ -380,7 +382,7 @@ where
 
         let string = String::from_utf8(buf)?;
         if self.is_key {
-            self.current_key = Some(string.clone());
+            self.curr_key = Some(string.clone());
         }
 
         visitor.visit_string(string)
@@ -390,9 +392,10 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported(
-            "Deserializing byte slices is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "deserializing byte slices is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
 
         // is_ty!(ByteArray, self.field_name, self.next_ty);
 
@@ -414,7 +417,7 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(ByteArray, self.current_key, self.next_ty);
+        is_ty!(ByteArray, self.curr_key, self.next_ty);
 
         let len = match F::AS_ENUM {
             Variant::BigEndian => self.input.read_i32::<BigEndian>()? as u32,
@@ -443,18 +446,20 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported(
-            "Deserializing unit values is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "deserializing unit values is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn deserialize_unit_struct<V>(self, _name: &'static str, _visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported(
-            "Deserializing unit structs is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "deserializing unit structs is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn deserialize_newtype_struct<V>(
@@ -465,9 +470,10 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported(
-            "Deserializing newtype structs is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "deserializing newtype structs is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     #[inline]
@@ -503,9 +509,10 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported(
-            "Deserializing tuple structs is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "deserializing tuple structs is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     #[inline]
@@ -513,7 +520,7 @@ where
     where
         V: Visitor<'de>,
     {
-        is_ty!(Compound, self.current_key, self.next_ty);
+        is_ty!(Compound, self.curr_key, self.next_ty);
 
         let de = MapDeserializer::from(self);
         visitor.visit_map(de)
@@ -541,7 +548,10 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported("Deserializing enums is not supported"))
+        Err(Error::Unsupported {
+            op: "deserializing enums is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     #[inline]

@@ -15,9 +15,10 @@ macro_rules! forward_unsupported {
         paste! {$(
             #[inline]
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), Error> {
-                Err(Error::Unsupported(concat!(
-                    "serialization of `", stringify!($ty), "` is not supported"
-                )))
+                Err(Error::Unsupported {
+                    op: concat!("serialization of `", stringify!($ty), "` is not supported"),
+                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+                })
             }
         )+}
     }
@@ -29,9 +30,10 @@ macro_rules! forward_unsupported_field {
         paste! {$(
             #[inline]
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<bool, Error> {
-                Err(Error::Unsupported(concat!(
-                    "Serialization of `", stringify!($ty), "` is not supported"
-                )))
+                Err(Error::Unsupported {
+                    op: concat!("serialization of `", stringify!($ty), "` is not supported"),
+                    at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+                })
             }
         )+}
     }
@@ -288,6 +290,8 @@ where
     is_initial: bool,
     /// Stores the length of the list that is currently being serialised.
     len: usize,
+    /// The current key that is being serialised.
+    curr_key: Option<String>,
     _marker: PhantomData<E>,
 }
 
@@ -303,6 +307,7 @@ where
             writer: w,
             is_initial: true,
             len: 0,
+            curr_key: None,
             _marker: PhantomData,
         }
     }
@@ -466,9 +471,10 @@ where
         _variant: &'static str,
         _value: &T,
     ) -> Result<(), Error> {
-        Err(Error::Unsupported(
-            "Serializing newtype variants is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "serializing newtype variants is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     #[inline]
@@ -477,9 +483,10 @@ where
             self.len = len;
             Ok(self)
         } else {
-            Err(Error::Unsupported(
-                "Dynamically sized sequences is not supported. If you are trying to serialize an iterator, call `Iterator::collect` to create a sequence with known size.",
-            ))
+            Err(Error::Unsupported {
+                op: "dynamically sized sequences is not supported",
+                at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            })
         }
     }
 
@@ -494,9 +501,10 @@ where
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        Err(Error::Unsupported(
-            "Serializing tuple structs is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "serializing tuple structs is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn serialize_tuple_variant(
@@ -506,9 +514,10 @@ where
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        Err(Error::Unsupported(
-            "Serializing tuple variants is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "serializing tuple variants is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
@@ -544,9 +553,10 @@ where
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        Err(Error::Unsupported(
-            "Serializing struct variants is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "serializing struct variants is not supported",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 }
 
@@ -631,9 +641,10 @@ where
     where
         K: ?Sized + Serialize,
     {
-        Err(Error::Unsupported(
-            "Serializer::serialize_key is not supported. Use Serializer::serialize_entry instead",
-        ))
+        Err(Error::Unsupported {
+            op: "Serializer::serialize_key is not supported. Use Serializer::serialize_entry instead",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     /// This function *must* not be used. Use [`serialize_key`](Self::serialize_key) instead.
@@ -641,9 +652,10 @@ where
     where
         V: ?Sized + Serialize,
     {
-        Err(Error::Unsupported(
-            "Serializer::serialize_value is not supported. Use Serializer::serialize_entry instead",
-        ))
+        Err(Error::Unsupported {
+            op: "Serializer::serialize_value is not supported. Use Serializer::serialize_entry instead",
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn serialize_entry<K, V>(&mut self, key: &K, value: &V) -> Result<(), Error>
@@ -799,13 +811,17 @@ where
     }
 
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
-        Err(Error::Unsupported("Serializing () is not supported"))
+        Err(Error::Unsupported {
+            op: "serializing unit is not supported",
+            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
-        Err(Error::Unsupported(
-            "Serializing unit structs is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "serializing unit structs is not supported",
+            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn serialize_unit_variant(
@@ -814,9 +830,10 @@ where
         _variant_index: u32,
         _variant: &'static str,
     ) -> Result<Self::Ok, Self::Error> {
-        Err(Error::Unsupported(
-            "Serializing unit variants is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "serializing unit variants is not supported",
+            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
@@ -824,9 +841,10 @@ where
         _name: &'static str,
         _value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        Err(Error::Unsupported(
-            "Serializing newtype structs is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "Serializing newtype structs is not supported",
+            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
@@ -836,9 +854,10 @@ where
         _variant: &'static str,
         _value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        Err(Error::Unsupported(
-            "Serializing newtype variants is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "serializing newtype variants is not supported",
+            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
@@ -856,9 +875,10 @@ where
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        Err(Error::Unsupported(
-            "Serializing tuple structs is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "serializing tuple structs is not supported",
+            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     fn serialize_tuple_variant(
@@ -868,9 +888,10 @@ where
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        Err(Error::Unsupported(
-            "Serializing tuple variants is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "serializing tuple variants is not supported",
+            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 
     #[inline]
@@ -896,9 +917,10 @@ where
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        Err(Error::Unsupported(
-            "Serializing struct variants is not supported",
-        ))
+        Err(Error::Unsupported {
+            op: "serializing struct variants is not supported",
+            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+        })
     }
 }
 

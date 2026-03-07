@@ -22,14 +22,14 @@ mod tests {
     #[derive(serde::Serialize)]
     struct Data {
         value: Test,
-        tuple: [u8; 5],
+        tuple: Vec<i8>,
     }
 
     #[test]
     fn simple_snbt() {
         let value = Data {
             value: Test::A,
-            tuple: [1; 5],
+            tuple: vec![1; 5],
         };
 
         let mut ser = Serializer::new();

@@ -10,11 +10,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// The encountered NBT tag type is invalid.
-    #[error("An unknown tag type was encountered ({actual}), it should be in the range 0-12")]
+    #[error("unknown tag type was encountered ({actual}), it should be in the range 0-12")]
     TypeOutOfRange { actual: u8 },
     /// Found a type different from the type that was expected.
     #[error(
-        "Expected tag of type `{expected:?}`, received `{actual:?}` (while deserialising field `{at:?}`)"
+        "expected tag of type `{expected:?}`, received `{actual:?}` at field `{at:?}`)"
     )]
     UnexpectedType {
         /// Type that the deserializer was expecting to find.
@@ -23,11 +23,16 @@ pub enum Error {
         actual: FieldType,
         /// The struct field that the error occurred at.
         /// This is provided on a best-effort basis and may not always be accurate.
-        at: Option<String>,
+        at: String,
     },
     /// The requested operation is not supported.
-    #[error("{0}")]
-    Unsupported(&'static str),
+    #[error("`{op}` at field `{at}`")]
+    Unsupported {
+        /// Description of the error
+        op: &'static str,
+        /// The struct field that the error ocurred at.
+        at: String
+    },
     /// Any errors related to reading and writing from the stream.
     #[error("{0}")]
     ByteError(#[from] StreamError),

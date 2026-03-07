@@ -2,7 +2,7 @@ use serde::{
     Serialize,
     ser::{self, Impossible, SerializeSeq},
 };
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 
 use crate::Error;
 
@@ -10,9 +10,10 @@ macro_rules! forward_unsupported {
     ($($ty: ident),+) => {
         paste::paste! {$(
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), Error> {
-                Err(Error::Unsupported(concat!(
-                    "serialization of `", stringify!($ty), "` is not supported"
-                )))
+                Err(Error::Unsupported {
+                    op: concat!("serialization of `", stringify!($ty), "` is not supported"),
+                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+                })
             }
         )+}
     }
@@ -20,15 +21,19 @@ macro_rules! forward_unsupported {
 
 #[allow(dead_code)]
 pub struct Serializer {
+    struct_name: Option<String>,
     curr_ty: TypeId,
+    curr_key: Option<String>,
     is_key: bool,
-    pub output: String,
+    pub(crate) output: String,
 }
 
 impl Serializer {
     pub fn new() -> Serializer {
         Serializer {
+            struct_name: None,
             curr_ty: TypeId::of::<()>(),
+            curr_key: None,
             is_key: false,
             output: String::new(),
         }
@@ -91,7 +96,10 @@ impl ser::Serializer for &mut Serializer {
     }
 
     fn serialize_str(self, v: &str) -> Result<(), Error> {
-        println!("{v}");
+        if self.is_key {
+            self.curr_key = Some(v.to_owned())
+        }
+
         if !self.is_key || v.contains(' ') {
             self.output.reserve(2 + v.len());
             self.output.push('"');
@@ -116,11 +124,21 @@ impl ser::Serializer for &mut Serializer {
     }
 
     fn serialize_bytes(self, v: &[u8]) -> std::result::Result<Self::Ok, Self::Error> {
-        let mut seq = self.serialize_seq(Some(v.len()))?;
-        for byte in v {
-            seq.serialize_element(byte)?;
+        if !v.is_empty() {
+            self.output.push_str("[B;");
+            self.output.push_str(&v[0].to_string());
+        } else {
+            self.output.push('[');
         }
-        seq.end()
+
+        v.iter().skip(1).map(u8::to_string).for_each(|b| {
+            self.output.push(',');
+            self.output.push_str(&b)
+        });
+        self.output.push(']');
+
+        println!("output: {}", self.output);
+        Ok(())
     }
 
     fn serialize_unit(self) -> std::result::Result<Self::Ok, Self::Error> {
@@ -165,7 +183,10 @@ impl ser::Serializer for &mut Serializer {
     where
         T: ?Sized + Serialize,
     {
-        todo!()
+        Err(Error::Unsupported { 
+            op: "serializing newtype enum variants is not supported", 
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")) 
+        })
     }
 
     fn serialize_seq(
@@ -176,9 +197,11 @@ impl ser::Serializer for &mut Serializer {
         Ok(self)
     }
 
-    fn serialize_tuple(self, len: usize) -> std::result::Result<Self::SerializeTuple, Self::Error> {
-        self.serialize_seq(Some(len))?;
-        todo!()
+    fn serialize_tuple(self, _len: usize) -> std::result::Result<Self::SerializeTuple, Self::Error> {
+        Err(Error::Unsupported { 
+            op: "serializing tuples is not supported", 
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")) 
+        })
     }
 
     fn serialize_tuple_struct(
@@ -186,7 +209,10 @@ impl ser::Serializer for &mut Serializer {
         _name: &'static str,
         _len: usize,
     ) -> std::result::Result<Self::SerializeTupleStruct, Self::Error> {
-        todo!()
+        Err(Error::Unsupported { 
+            op: "serializing tuple structs is not supported", 
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")) 
+        })
     }
 
     fn serialize_tuple_variant(
@@ -196,7 +222,10 @@ impl ser::Serializer for &mut Serializer {
         _variant: &'static str,
         _len: usize,
     ) -> std::result::Result<Self::SerializeTupleVariant, Self::Error> {
-        todo!()
+        Err(Error::Unsupported { 
+            op: "serializing tuple enum variants is not supported", 
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")) 
+        })
     }
 
     fn serialize_map(
@@ -222,7 +251,10 @@ impl ser::Serializer for &mut Serializer {
         _variant: &'static str,
         _len: usize,
     ) -> std::result::Result<Self::SerializeStructVariant, Self::Error> {
-        todo!()
+        Err(Error::Unsupported { 
+            op: "serializing struct enum variants is not supported", 
+            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")) 
+        })
     }
 }
 
