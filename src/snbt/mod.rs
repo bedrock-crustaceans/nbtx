@@ -17,14 +17,14 @@ mod tests {
     #[derive(serde::Serialize)]
     struct Data {
         value: Test,
-        tuple: (i8, bool, &'static str)
+        tuple: [u8; 5]
     }
 
     #[test]
     fn simple_snbt() {
         let value = Data {
             value: Test::A,
-            tuple: (5, true, "Hello")
+            tuple: [1; 5]
         };
 
         let mut ser = Serializer::new();

@@ -5,21 +5,24 @@ use thiserror::Error;
 use crate::FieldType;
 
 
-pub type Result<T> = std::result::Result<T, NbtError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur while serializing or deserializing NBT data.
-#[derive(Error, Debug, Clone)]
-pub enum NbtError {
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum Error {
     /// The encountered NBT tag type is invalid.
     #[error("An unknown tag type was encountered ({actual}), it should be in the range 0-12")]
     TypeOutOfRange { actual: u8 },
     /// Found a type different from the type that was expected.
-    #[error("Expected tag of type {expected:?}, received {actual:?}")]
+    #[error("Expected tag of type `{expected:?}`, received `{actual:?}` (while deserialising field `{at:?}`)")]
     UnexpectedType {
         /// Type that the deserializer was expecting to find.
         expected: FieldType,
         /// Type that was found in the NBT stream.
         actual: FieldType,
+        /// The struct field that the error occurred at.
+        /// This is provided on a best-effort basis and may not always be accurate.
+        at: Option<String>
     },
     /// The requested operation is not supported.
     #[error("{0}")]
@@ -34,26 +37,26 @@ pub enum NbtError {
     Other(Cow<'static, str>),
 }
 
-impl From<std::io::Error> for NbtError {
+impl From<std::io::Error> for Error {
     fn from(value: std::io::Error) -> Self {
         Self::ByteError(StreamError::IoError(value.to_string()))
     }
 }
 
-impl From<std::str::Utf8Error> for NbtError {
+impl From<std::str::Utf8Error> for Error {
     fn from(value: std::str::Utf8Error) -> Self {
         Self::ByteError(StreamError::Utf8Error(value))
     }
 }
 
-impl From<std::string::FromUtf8Error> for NbtError {
+impl From<std::string::FromUtf8Error> for Error {
     fn from(value: std::string::FromUtf8Error) -> Self {
         Self::ByteError(StreamError::FromUtf8Error(value))
     }
 }
 
 /// Errors related to binary reading and writing.
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum StreamError {
     // TODO: std::io::Error does not implement Clone while the ProtoCodec error type requires it.
     // This is why I convert the error to a string rather than storing it directly like the others.

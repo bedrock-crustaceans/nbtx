@@ -9,12 +9,18 @@ use serde::{Deserialize, Serialize};
 use crate::{
     from_be_bytes, from_le_bytes, from_net_bytes,
     nbt::ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes},
-    NbtError, NetworkLittleEndian, Value,
+    Error, NetworkLittleEndian, Value,
 };
 
 const BIG_TEST_NBT: &[u8] = include_bytes!("../test/bigtest.nbt");
 const HELLO_WORLD_NBT: &[u8] = include_bytes!("../test/hello_world.nbt");
 const PLAYER_NAN_VALUE_NBT: &[u8] = include_bytes!("../test/player_nan_value.nbt");
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Wrong {
+    optional: Option<i32>,
+    required: i8
+}
 
 #[test]
 fn read_write_option() {
@@ -166,7 +172,7 @@ fn read_write_hello_world() {
     println!("{copy:?}");
 
     // let decoded: HelloWorld = dbg!(from_be_bytes(&mut HELLO_WORLD_NBT)).unwrap();
-    let decoded: Result<HelloWorld, NbtError> = from_be_bytes(&mut copy);
+    let decoded: Result<HelloWorld, Error> = from_be_bytes(&mut copy);
     if let Err(err) = decoded {
         println!("{err:#}");
         panic!("");

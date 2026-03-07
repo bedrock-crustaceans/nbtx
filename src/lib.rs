@@ -11,7 +11,7 @@ pub use byteorder::{BigEndian, LittleEndian};
 use std::borrow::Cow;
 use std::fmt::{Debug, Display};
 
-pub use error::NbtError;
+pub use error::{Error, Result};
 
 #[cfg(test)]
 mod test;
@@ -112,12 +112,12 @@ pub enum FieldType {
 }
 
 impl TryFrom<u8> for FieldType {
-    type Error = NbtError;
+    type Error = Error;
 
-    fn try_from(v: u8) -> Result<Self, Self::Error> {
+    fn try_from(v: u8) -> Result<Self> {
         const LAST_DISC: u8 = FieldType::LongArray as u8;
         if v > LAST_DISC {
-            return Err(NbtError::TypeOutOfRange { actual: v });
+            return Err(Error::TypeOutOfRange { actual: v });
         }
 
         // SAFETY: Because `Self` is marked as `repr(u8)`, its layout is guaranteed to start
@@ -127,20 +127,20 @@ impl TryFrom<u8> for FieldType {
     }
 }
 
-impl serde::de::Error for NbtError {
+impl serde::de::Error for Error {
     fn custom<T>(msg: T) -> Self
     where
         T: Display,
     {
-        NbtError::Other(Cow::Owned(msg.to_string()))
+        Error::Other(Cow::Owned(msg.to_string()))
     }
 }
 
-impl serde::ser::Error for NbtError {
+impl serde::ser::Error for Error {
     fn custom<T>(msg: T) -> Self
     where
         T: Display,
     {
-        NbtError::Other(Cow::Owned(msg.to_string()))
+        Error::Other(Cow::Owned(msg.to_string()))
     }
 }

@@ -1,6 +1,6 @@
 use serde::de::{self, Visitor};
 
-use crate::NbtError;
+use crate::Error;
 
 #[derive(Debug)]
 pub struct SnbtDeserializer<'re> {
@@ -18,9 +18,9 @@ impl<'re> SnbtDeserializer<'re> {
 }
 
 impl<'de> de::Deserializer<'de> for &mut SnbtDeserializer<'_> {
-    type Error = NbtError;
+    type Error = Error;
 
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, NbtError> 
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>
     {
@@ -32,7 +32,7 @@ impl<'de> de::Deserializer<'de> for &mut SnbtDeserializer<'_> {
         }
     }
 
-    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, NbtError>
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>
     {
@@ -122,8 +122,8 @@ impl<'de> de::Deserializer<'de> for &mut SnbtDeserializer<'_> {
         let mut quotes = self.input.char_indices().filter_map(|(i, c)| (c == '"').then_some(i)).take(2);
         
 
-        let start_quote = quotes.next().ok_or(NbtError::Malformed("Expected string, found no start quote"))?;
-        let end_quote = quotes.next().ok_or(NbtError::Malformed("Missing end quote for string"))?;
+        let start_quote = quotes.next().ok_or(Error::Malformed("Expected string, found no start quote"))?;
+        let end_quote = quotes.next().ok_or(Error::Malformed("Missing end quote for string"))?;
 
         let str = &self.input[start_quote + 1..end_quote];
         println!("str: {str}");
