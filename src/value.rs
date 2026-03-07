@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq};
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 /// General NBT value type that can represent any value.
 ///

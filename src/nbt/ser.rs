@@ -3,11 +3,11 @@ use std::marker::PhantomData;
 use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
 use paste::paste;
 use serde::ser::{Impossible, SerializeMap, SerializeSeq, SerializeStruct, SerializeTuple};
-use serde::{ser, Serialize};
+use serde::{Serialize, ser};
 
 use varint_rs::VarintWriter;
 
-use crate::{EndiannessImpl, FieldType, Error, NetworkLittleEndian, Variant};
+use crate::{EndiannessImpl, Error, FieldType, NetworkLittleEndian, Variant};
 
 /// Returns a `not supported` error.
 macro_rules! forward_unsupported {
@@ -445,7 +445,7 @@ where
     fn serialize_unit_variant(
         self,
         _name: &'static str,
-        variant_index: u32,
+        _variant_index: u32,
         _variant: &'static str,
     ) -> Result<(), Error> {
         todo!()
@@ -477,7 +477,9 @@ where
             self.len = len;
             Ok(self)
         } else {
-            Err(Error::Unsupported("Dynamically sized sequences is not supported. If you are trying to serialize an iterator, call `Iterator::collect` to create a sequence with known size."))
+            Err(Error::Unsupported(
+                "Dynamically sized sequences is not supported. If you are trying to serialize an iterator, call `Iterator::collect` to create a sequence with known size.",
+            ))
         }
     }
 

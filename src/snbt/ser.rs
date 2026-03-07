@@ -1,7 +1,10 @@
+use serde::{
+    Serialize,
+    ser::{self, Impossible, SerializeSeq},
+};
 use std::any::TypeId;
-use serde::{Serialize, ser::{self, Impossible, SerializeSeq}};
 
-use crate::{Error};
+use crate::Error;
 
 macro_rules! forward_unsupported {
     ($($ty: ident),+) => {
@@ -15,10 +18,11 @@ macro_rules! forward_unsupported {
     }
 }
 
+#[allow(dead_code)]
 pub struct Serializer {
     curr_ty: TypeId,
     is_key: bool,
-    pub output: String
+    pub output: String,
 }
 
 impl Serializer {
@@ -26,7 +30,7 @@ impl Serializer {
         Serializer {
             curr_ty: TypeId::of::<()>(),
             is_key: false,
-            output: String::new()
+            output: String::new(),
         }
     }
 }
@@ -110,26 +114,27 @@ impl ser::Serializer for &mut Serializer {
     fn serialize_none(self) -> Result<(), Error> {
         self.serialize_unit()
     }
-    
+
     fn serialize_bytes(self, v: &[u8]) -> std::result::Result<Self::Ok, Self::Error> {
-
-
         let mut seq = self.serialize_seq(Some(v.len()))?;
         for byte in v {
             seq.serialize_element(byte)?;
         }
         seq.end()
     }
-    
+
     fn serialize_unit(self) -> std::result::Result<Self::Ok, Self::Error> {
         // Does nothing.
         Ok(())
     }
-    
-    fn serialize_unit_struct(self, _name: &'static str) -> std::result::Result<Self::Ok, Self::Error> {
+
+    fn serialize_unit_struct(
+        self,
+        _name: &'static str,
+    ) -> std::result::Result<Self::Ok, Self::Error> {
         self.serialize_unit()
     }
-    
+
     fn serialize_unit_variant(
         self,
         _name: &'static str,
@@ -138,18 +143,18 @@ impl ser::Serializer for &mut Serializer {
     ) -> std::result::Result<Self::Ok, Self::Error> {
         self.serialize_str(variant)
     }
-    
+
     fn serialize_newtype_struct<T>(
         self,
         _name: &'static str,
         value: &T,
     ) -> std::result::Result<Self::Ok, Self::Error>
     where
-        T: ?Sized + Serialize 
+        T: ?Sized + Serialize,
     {
-        value.serialize(self) 
+        value.serialize(self)
     }
-    
+
     fn serialize_newtype_variant<T>(
         self,
         _name: &'static str,
@@ -158,21 +163,24 @@ impl ser::Serializer for &mut Serializer {
         _value: &T,
     ) -> std::result::Result<Self::Ok, Self::Error>
     where
-        T: ?Sized + Serialize 
+        T: ?Sized + Serialize,
     {
         todo!()
     }
-    
-    fn serialize_seq(self, _len: Option<usize>) -> std::result::Result<Self::SerializeSeq, Self::Error> {
+
+    fn serialize_seq(
+        self,
+        _len: Option<usize>,
+    ) -> std::result::Result<Self::SerializeSeq, Self::Error> {
         self.output.push('[');
         Ok(self)
     }
-    
+
     fn serialize_tuple(self, len: usize) -> std::result::Result<Self::SerializeTuple, Self::Error> {
         self.serialize_seq(Some(len))?;
         todo!()
     }
-    
+
     fn serialize_tuple_struct(
         self,
         _name: &'static str,
@@ -180,7 +188,7 @@ impl ser::Serializer for &mut Serializer {
     ) -> std::result::Result<Self::SerializeTupleStruct, Self::Error> {
         todo!()
     }
-    
+
     fn serialize_tuple_variant(
         self,
         _name: &'static str,
@@ -190,12 +198,15 @@ impl ser::Serializer for &mut Serializer {
     ) -> std::result::Result<Self::SerializeTupleVariant, Self::Error> {
         todo!()
     }
-    
-    fn serialize_map(self, len: Option<usize>) -> std::result::Result<Self::SerializeMap, Self::Error> {
+
+    fn serialize_map(
+        self,
+        _len: Option<usize>,
+    ) -> std::result::Result<Self::SerializeMap, Self::Error> {
         self.output.push('{');
         Ok(self)
     }
-    
+
     fn serialize_struct(
         self,
         _name: &'static str,
@@ -203,7 +214,7 @@ impl ser::Serializer for &mut Serializer {
     ) -> std::result::Result<Self::SerializeStruct, Self::Error> {
         self.serialize_map(Some(len))
     }
-    
+
     fn serialize_struct_variant(
         self,
         _name: &'static str,
@@ -212,7 +223,7 @@ impl ser::Serializer for &mut Serializer {
         _len: usize,
     ) -> std::result::Result<Self::SerializeStructVariant, Self::Error> {
         todo!()
-    }    
+    }
 }
 
 impl ser::SerializeSeq for &mut Serializer {
@@ -251,7 +262,7 @@ impl ser::SerializeMap for &mut Serializer {
         self.is_key = true;
         let result = k.serialize(&mut **self);
         self.is_key = false;
-        result  
+        result
     }
 
     fn serialize_value<T>(&mut self, v: &T) -> Result<(), Error>
@@ -297,7 +308,7 @@ impl ser::SerializeStructVariant for &mut Serializer {
     type Ok = ();
     type Error = Error;
 
-    fn serialize_field<T>(&mut self, k: &'static str, v: &T) -> Result<(), Error>
+    fn serialize_field<T>(&mut self, _k: &'static str, _v: &T) -> Result<(), Error>
     where
         T: ?Sized + Serialize,
     {
@@ -308,4 +319,3 @@ impl ser::SerializeStructVariant for &mut Serializer {
         todo!()
     }
 }
-

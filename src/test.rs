@@ -7,9 +7,8 @@ use byteorder::BigEndian;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    from_be_bytes, from_le_bytes, from_net_bytes,
+    Error, NetworkLittleEndian, Value, from_be_bytes, from_le_bytes, from_net_bytes,
     nbt::ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes},
-    Error, NetworkLittleEndian, Value,
 };
 
 const BIG_TEST_NBT: &[u8] = include_bytes!("../test/bigtest.nbt");
@@ -19,7 +18,7 @@ const PLAYER_NAN_VALUE_NBT: &[u8] = include_bytes!("../test/player_nan_value.nbt
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Wrong {
     optional: Option<i32>,
-    required: i8
+    required: i8,
 }
 
 #[test]

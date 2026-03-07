@@ -4,10 +4,10 @@ use std::marker::PhantomData;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use paste::paste;
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
-use serde::{de, Deserialize};
+use serde::{Deserialize, de};
 use varint_rs::VarintReader;
 
-use crate::{EndiannessImpl, FieldType, Error, NetworkLittleEndian, Variant};
+use crate::{EndiannessImpl, Error, FieldType, NetworkLittleEndian, Variant};
 
 /// Verifies that the deserialized type is equal to the expected type.
 macro_rules! is_ty {
@@ -16,7 +16,7 @@ macro_rules! is_ty {
             return Err(Error::UnexpectedType {
                 expected: FieldType::$expected,
                 actual: $actual,
-                at: $field_name.clone()
+                at: $field_name.clone(),
             });
         }
     };
@@ -65,7 +65,7 @@ where
             return Err(Error::UnexpectedType {
                 actual: next_ty,
                 expected: FieldType::Compound,
-                at: None
+                at: None,
             });
         }
 
@@ -236,9 +236,7 @@ where
             self.deserialize_string(visitor)
         } else {
             match self.next_ty {
-                FieldType::End => Err(Error::Other(Cow::Borrowed(
-                    "Encountered unmatched end tag",
-                ))),
+                FieldType::End => Err(Error::Other(Cow::Borrowed("Encountered unmatched end tag"))),
                 FieldType::Byte => self.deserialize_i8(visitor),
                 FieldType::Short => self.deserialize_i16(visitor),
                 FieldType::Int => self.deserialize_i32(visitor),
@@ -450,11 +448,7 @@ where
         ))
     }
 
-    fn deserialize_unit_struct<V>(
-        self,
-        _name: &'static str,
-        _visitor: V,
-    ) -> Result<V::Value, Error>
+    fn deserialize_unit_struct<V>(self, _name: &'static str, _visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
     {
@@ -547,9 +541,7 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported(
-            "Deserializing enums is not supported",
-        ))
+        Err(Error::Unsupported("Deserializing enums is not supported"))
     }
 
     #[inline]
