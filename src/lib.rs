@@ -9,7 +9,7 @@ pub use crate::value::Value;
 pub use byteorder::{BigEndian, LittleEndian};
 
 use std::borrow::Cow;
-use std::fmt::{Debug, Display};
+use std::fmt::{self, Debug, Display};
 
 pub use error::{Error, Result};
 
@@ -18,7 +18,7 @@ mod test;
 
 mod error;
 mod nbt;
-mod snbt;
+pub mod snbt;
 mod value;
 
 mod private {
@@ -111,13 +111,35 @@ pub enum FieldType {
     LongArray = 12,
 }
 
-impl TryFrom<u8> for FieldType {
-    type Error = Error;
+impl Display for FieldType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use FieldType::*;
 
-    fn try_from(v: u8) -> Result<Self> {
+        let str = match self {
+            End => "end",
+            Byte => "byte",
+            Short => "short",
+            Int => "int",
+            Long => "long",
+            Float => "float",
+            Double => "double",
+            ByteArray => "byte array",
+            String => "string",
+            List => "list",
+            Compound => "compound",
+            IntArray => "int array",
+            LongArray => "long array"
+        };
+
+        f.write_str(str)
+    }
+}
+
+impl FieldType {
+    pub(crate) fn try_from(v: u8, at: &mut Option<String>) -> Result<Self> {
         const LAST_DISC: u8 = FieldType::LongArray as u8;
         if v > LAST_DISC {
-            return Err(Error::TypeOutOfRange { actual: v });
+            return Err(Error::TypeOutOfRange { actual: v, at: at.take().unwrap_or_else(|| String::from("unknown")) });
         }
 
         // SAFETY: Because `Self` is marked as `repr(u8)`, its layout is guaranteed to start
@@ -127,12 +149,28 @@ impl TryFrom<u8> for FieldType {
     }
 }
 
+// impl TryFrom<u8> for FieldType {
+//     type Error = Error;
+
+//     fn try_from(v: u8) -> Result<Self> {
+//         const LAST_DISC: u8 = FieldType::LongArray as u8;
+//         if v > LAST_DISC {
+//             return Err(Error::TypeOutOfRange { actual: v });
+//         }
+
+//         // SAFETY: Because `Self` is marked as `repr(u8)`, its layout is guaranteed to start
+//         // with a `u8` discriminant as its first field. Additionally, the raw discriminant is verified
+//         // to be in the enum's range.
+//         Ok(unsafe { std::mem::transmute::<u8, FieldType>(v) })
+//     }
+// }
+
 impl serde::de::Error for Error {
     fn custom<T>(msg: T) -> Self
     where
         T: Display,
     {
-        Error::Other(Cow::Owned(msg.to_string()))
+        Error::Other(msg.to_string())
     }
 }
 
@@ -141,6 +179,6 @@ impl serde::ser::Error for Error {
     where
         T: Display,
     {
-        Error::Other(Cow::Owned(msg.to_string()))
+        Error::Other(msg.to_string())
     }
 }

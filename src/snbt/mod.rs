@@ -9,7 +9,7 @@ mod tests {
 
     use crate::{
         Value,
-        snbt::{de::SnbtDeserializer, ser::Serializer},
+        snbt::{de::Deserializer, ser::Serializer},
     };
 
     #[derive(Debug, Copy, Clone, serde::Serialize)]
@@ -22,13 +22,15 @@ mod tests {
     #[derive(serde::Serialize)]
     struct Data {
         value: Test,
-        tuple: Vec<i8>,
+        byte: i8,
+        tuple: Vec<i32>,
     }
 
     #[test]
     fn simple_snbt() {
         let value = Data {
             value: Test::A,
+            byte: 7,
             tuple: vec![1; 5],
         };
 
@@ -36,6 +38,11 @@ mod tests {
         value.serialize(&mut ser).unwrap();
 
         println!("{}", ser.output);
+
+        let mut de = Deserializer::new(&ser.output);
+        let val = Value::deserialize(&mut de).unwrap();
+
+        println!("Deserialised: {val:?}");
     }
 
     #[test]
@@ -76,6 +83,12 @@ mod tests {
 
         let mut ser = Serializer::new();
         value.serialize(&mut ser).unwrap();
-        println!("all: {}", ser.output);
+        
+        let output = ser.output.clone();
+
+        let mut de = Deserializer::new(&output);
+        let out: Value = Value::deserialize(&mut de).unwrap();
+
+        println!("{out:?}");
     }
 }

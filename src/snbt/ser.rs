@@ -137,7 +137,6 @@ impl ser::Serializer for &mut Serializer {
         });
         self.output.push(']');
 
-        println!("output: {}", self.output);
         Ok(())
     }
 
@@ -333,21 +332,5 @@ impl ser::SerializeStruct for &mut Serializer {
     fn end(self) -> Result<(), Error> {
         self.output.push('}');
         Ok(())
-    }
-}
-
-impl ser::SerializeStructVariant for &mut Serializer {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_field<T>(&mut self, _k: &'static str, _v: &T) -> Result<(), Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        todo!()
-    }
-
-    fn end(self) -> Result<(), Error> {
-        todo!()
     }
 }

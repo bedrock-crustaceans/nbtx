@@ -26,7 +26,7 @@ macro_rules! is_ty {
 macro_rules! forward_unsupported {
     ($($ty: ident),+) => {
         paste! {$(
-            #[inline]
+            
             fn [<deserialize_ $ty>]<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
             where
                 V: Visitor<'de>
@@ -61,7 +61,7 @@ where
 {
     /// Creates a new deserializer, consuming the reader.
     pub fn new(input: &'re mut R) -> Result<Self, Error> {
-        let next_ty = FieldType::try_from(input.read_u8()?)?;
+        let next_ty = FieldType::try_from(input.read_u8()?, &mut None)?;
         if next_ty != FieldType::Compound {
             return Err(Error::UnexpectedType {
                 actual: next_ty,
@@ -97,7 +97,7 @@ where
 /// Reads a single object of type `T` from the given buffer.
 ///
 /// On success, the deserialized object and number of bytes read from the buffer are returned.
-#[inline]
+
 pub fn from_bytes<'de, 're, F, T>(reader: &'re mut impl ReadBytesExt) -> Result<T, Error>
 where
     T: Deserialize<'de>,
@@ -137,7 +137,7 @@ where
 ///  println!("Got {data:?}!");
 /// # }
 /// ```
-#[inline]
+
 pub fn from_le_bytes<'de, T, R>(reader: &mut R) -> Result<T, Error>
 where
     R: ReadBytesExt,
@@ -174,7 +174,7 @@ where
 ///  println!("Got {data:?}!");
 /// # }
 /// ```
-#[inline]
+
 pub fn from_be_bytes<'de, T, R>(reader: &mut R) -> Result<T, Error>
 where
     R: ReadBytesExt,
@@ -211,7 +211,7 @@ where
 ///  println!("Got {data:?}!");
 /// # }
 /// ```
-#[inline]
+
 pub fn from_net_bytes<'data, T, R>(reader: &mut R) -> Result<T, Error>
 where
     R: ReadBytesExt,
@@ -237,14 +237,14 @@ where
             self.deserialize_string(visitor)
         } else {
             match self.next_ty {
-                FieldType::End => Err(Error::Other(Cow::Borrowed("encountered unmatched end tag"))),
+                FieldType::End => Err(Error::UnexpectedEnd),
                 FieldType::Byte => self.deserialize_i8(visitor),
                 FieldType::Short => self.deserialize_i16(visitor),
                 FieldType::Int => self.deserialize_i32(visitor),
                 FieldType::Long => self.deserialize_i64(visitor),
                 FieldType::Float => self.deserialize_f32(visitor),
                 FieldType::Double => self.deserialize_f64(visitor),
-                FieldType::ByteArray => self.deserialize_byte_buf(visitor),
+                FieldType::ByteArray => self.deserialize_seq(visitor),
                 FieldType::String => self.deserialize_string(visitor),
                 FieldType::List => self.deserialize_seq(visitor),
                 FieldType::Compound => self.deserialize_map(visitor),
@@ -254,7 +254,7 @@ where
         }
     }
 
-    #[inline]
+    
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -265,7 +265,7 @@ where
         visitor.visit_bool(n)
     }
 
-    #[inline]
+    
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -276,7 +276,7 @@ where
         visitor.visit_i8(n)
     }
 
-    #[inline]
+    
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -291,7 +291,7 @@ where
         visitor.visit_i16(n)
     }
 
-    #[inline]
+    
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -307,7 +307,7 @@ where
         visitor.visit_i32(n)
     }
 
-    #[inline]
+    
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -323,7 +323,7 @@ where
         visitor.visit_i64(n)
     }
 
-    #[inline]
+    
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -338,7 +338,7 @@ where
         visitor.visit_f32(n)
     }
 
-    #[inline]
+    
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -353,7 +353,7 @@ where
         visitor.visit_f64(n)
     }
 
-    #[inline]
+    
     fn deserialize_str<V>(self, _visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -364,7 +364,7 @@ where
         })
     }
 
-    #[inline]
+    
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -431,7 +431,7 @@ where
         visitor.visit_byte_buf(buf)
     }
 
-    #[inline]
+    
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -476,7 +476,7 @@ where
         })
     }
 
-    #[inline]
+    
     fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -484,7 +484,7 @@ where
         self.deserialize_tuple(0, visitor)
     }
 
-    #[inline]
+    
     fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -493,7 +493,7 @@ where
             FieldType::ByteArray => FieldType::Byte,
             FieldType::IntArray => FieldType::Int,
             FieldType::LongArray => FieldType::Long,
-            _ => FieldType::try_from(self.input.read_u8()?)?,
+            _ => FieldType::try_from(self.input.read_u8()?, &mut self.curr_key)?,
         };
 
         let de = SeqDeserializer::new(self, ty, len as u32)?;
@@ -515,7 +515,7 @@ where
         })
     }
 
-    #[inline]
+    
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -526,7 +526,7 @@ where
         visitor.visit_map(de)
     }
 
-    #[inline]
+    
     fn deserialize_struct<V>(
         self,
         _name: &'static str,
@@ -554,7 +554,7 @@ where
         })
     }
 
-    #[inline]
+    
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -562,7 +562,7 @@ where
         self.deserialize_string(visitor)
     }
 
-    #[inline]
+    
     fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -570,7 +570,7 @@ where
         self.deserialize_any(visitor)
     }
 
-    #[inline]
+    
     fn is_human_readable(&self) -> bool {
         false
     }
@@ -596,7 +596,7 @@ where
     R: ReadBytesExt,
     F: EndiannessImpl,
 {
-    #[inline]
+    
     pub fn new(
         de: &'a mut Deserializer<'re, 'de, F, R>,
         ty: FieldType,
@@ -614,9 +614,7 @@ where
         };
 
         if expected_len != 0 && expected_len != remaining {
-            return Err(Error::Other(Cow::Owned(format!(
-                "Sequence of {expected_len} {ty:?} expected, found only {remaining} items"
-            ))));
+            return Err(Error::Eof(de.curr_key.take().unwrap_or_else(|| String::from("unknown"))))
         }
 
         Ok(Self { de, ty, remaining })
@@ -630,7 +628,7 @@ where
 {
     type Error = Error;
 
-    #[inline]
+    
     fn next_element_seed<E>(&mut self, seed: E) -> Result<Option<E::Value>, Error>
     where
         E: DeserializeSeed<'de>,
@@ -663,7 +661,7 @@ where
     R: ReadBytesExt,
     F: EndiannessImpl,
 {
-    #[inline]
+    
     fn from(v: &'a mut Deserializer<'re, 'de, F, R>) -> Self {
         Self { de: v }
     }
@@ -675,8 +673,7 @@ where
     F: EndiannessImpl,
 {
     type Error = Error;
-
-    #[inline]
+    
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Error>
     where
         K: DeserializeSeed<'de>,
@@ -684,8 +681,7 @@ where
         self.de.is_key = true;
         self.de.next_ty = FieldType::String;
 
-        let next_ty = FieldType::try_from(self.de.input.read_u8()?)?;
-        // dbg!(&next_ty);
+        let next_ty = FieldType::try_from(self.de.input.read_u8()?, &mut self.de.curr_key)?;
 
         let r = if next_ty == FieldType::End {
             Ok(None)
@@ -698,7 +694,7 @@ where
         r
     }
 
-    #[inline]
+    
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Error>
     where
         V: DeserializeSeed<'de>,

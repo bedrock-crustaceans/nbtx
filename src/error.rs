@@ -10,11 +10,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// The encountered NBT tag type is invalid.
-    #[error("unknown tag type was encountered ({actual}), it should be in the range 0-12")]
-    TypeOutOfRange { actual: u8 },
+    #[error("unknown tag type was encountered ({actual}) at `{at}`, it should be in the range 0-12")]
+    TypeOutOfRange { actual: u8, at: String },
     /// Found a type different from the type that was expected.
     #[error(
-        "expected tag of type `{expected:?}`, received `{actual:?}` at field `{at:?}`)"
+        "expected tag of type {expected}, received {actual} at field `{at}`)"
     )]
     UnexpectedType {
         /// Type that the deserializer was expecting to find.
@@ -25,6 +25,11 @@ pub enum Error {
         /// This is provided on a best-effort basis and may not always be accurate.
         at: String,
     },
+    /// Any errors related to reading and writing from the stream.
+    #[error("{0}")]
+    ByteError(#[from] StreamError),
+    #[error("unexpected end tag")]
+    UnexpectedEnd,
     /// The requested operation is not supported.
     #[error("`{op}` at field `{at}`")]
     Unsupported {
@@ -33,14 +38,27 @@ pub enum Error {
         /// The struct field that the error ocurred at.
         at: String
     },
-    /// Any errors related to reading and writing from the stream.
+    #[error("expected a valid number at `{0}`")]
+    ExpectedInteger(String),
+    /// Integer is too large to fit in the given type
+    #[error("integer `{value}` is too large for type {ty} at `{at}`")]
+    IntegerTooLarge {
+        value: String, 
+        ty: FieldType, 
+        at: String
+    },
     #[error("{0}")]
-    ByteError(#[from] StreamError),
-    #[error("{0}")]
-    Malformed(&'static str),
-    /// Other errors that do not fit in any of the previous categories.
-    #[error("{0}")]
-    Other(Cow<'static, str>),
+    Other(String),
+    // #[error("{0}")]
+    // Malformed(&'static str),
+    #[error("unexpected end of file at `{0}`")]
+    Eof(String),
+    #[error("expected '{expected}', found '{found}', at `{at}`")]
+    ExpectedSymbol {
+        found: char,
+        expected: char,
+        at: String
+    }
 }
 
 impl From<std::io::Error> for Error {
