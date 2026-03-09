@@ -186,7 +186,7 @@ impl ser::Serializer for &mut Serializer {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -208,7 +208,7 @@ impl ser::Serializer for &mut Serializer {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -223,7 +223,7 @@ impl ser::Serializer for &mut Serializer {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -240,7 +240,7 @@ impl ser::Serializer for &mut Serializer {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -273,7 +273,7 @@ impl ser::Serializer for &mut Serializer {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 }

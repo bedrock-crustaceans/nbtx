@@ -479,7 +479,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -495,7 +495,7 @@ where
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: None
+                index: None,
             })
         }
     }
@@ -517,7 +517,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -534,7 +534,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -577,7 +577,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 }
@@ -669,7 +669,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -684,7 +684,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -848,7 +848,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -860,7 +860,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -877,7 +877,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -893,7 +893,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -911,7 +911,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -937,7 +937,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -955,7 +955,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 
@@ -989,7 +989,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: None
+            index: None,
         })
     }
 }

@@ -27,10 +27,11 @@ impl<'re> Deserializer<'re> {
     fn skip(&mut self, n: usize) -> Result<(), Error> {
         if self.input.len() < n {
             return Err(Error::Eof {
-                at: self.curr_key
+                at: self
+                    .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: Some(self.current_index())
+                index: Some(self.current_index()),
             });
         }
 
@@ -41,23 +42,33 @@ impl<'re> Deserializer<'re> {
     /// Skips over all whitespace and newlines and returns the next character without advancing
     /// the cursor.
     fn peek_char(&mut self) -> Result<char, Error> {
-        self.input.chars().filter(|&c| c != ' ' && c != '\n').next().ok_or(Error::Eof {
-            at: self.curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            index: Some(self.current_index())
-        })
+        self.input
+            .chars()
+            .filter(|&c| c != ' ' && c != '\n')
+            .next()
+            .ok_or(Error::Eof {
+                at: self
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+                index: Some(self.current_index()),
+            })
     }
 
     /// Skips over all whitespace and newlines and returns the next character without advancing
     /// the cursor. This function also returns the index of the character.
     fn peek_char_with_index(&mut self) -> Result<(usize, char), Error> {
-        self.input.char_indices().filter(|(_, c)| *c != ' ' && *c != '\n').next().ok_or(Error::Eof {
-            at: self.curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            index: Some(self.current_index())
-        })
+        self.input
+            .char_indices()
+            .filter(|(_, c)| *c != ' ' && *c != '\n')
+            .next()
+            .ok_or(Error::Eof {
+                at: self
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+                index: Some(self.current_index()),
+            })
     }
 
     /// Returns the next non-whitespace character, advancing the cursor.
@@ -69,17 +80,18 @@ impl<'re> Deserializer<'re> {
 
     /// If `is_key` is set to true it will not require quotation marks.
     fn parse_string(&mut self) -> Result<&str, Error> {
-        if self.peek_char()? == '"' {
+        let (idx, ch) = self.peek_char_with_index()?;
+        if ch == '"' {
             let first_quote = self.next_char()?;
             if first_quote != '"' {
                 return Err(Error::ExpectedSymbol {
                     found: first_quote,
-                    expected: '"',
+                    expected: Some('"'),
                     at: self
                         .curr_key
                         .take()
                         .unwrap_or_else(|| String::from("unknown")),
-                    index: Some(self.current_index())
+                    index: Some(self.current_index()),
                 });
             }
 
@@ -90,36 +102,38 @@ impl<'re> Deserializer<'re> {
                     Ok(s)
                 }
                 None => Err(Error::Eof {
-                    at: self.curr_key
+                    at: self
+                        .curr_key
                         .take()
                         .unwrap_or_else(|| String::from("unknown")),
-                    index: Some(self.current_index())
+                    index: Some(self.current_index()),
                 }),
             }
         } else if self.is_key {
             // continue until colon
             match self.input.find(':') {
                 Some(len) => {
-                    let s = &self.input[..len];
+                    let s = &self.input[idx..len];
                     self.input = &self.input[len..];
                     Ok(s)
                 }
                 None => Err(Error::Eof {
-                    at: self.curr_key
+                    at: self
+                        .curr_key
                         .take()
                         .unwrap_or_else(|| String::from("unknown")),
-                    index: Some(self.current_index())
+                    index: Some(self.current_index()),
                 }),
             }
         } else {
             Err(Error::ExpectedSymbol {
                 found: self.peek_char()?,
-                expected: '"',
+                expected: Some('"'),
                 at: self
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: Some(self.current_index())
+                index: Some(self.current_index()),
             })
         }
     }
@@ -133,6 +147,7 @@ impl<'re> Deserializer<'re> {
         V: Visitor<'de>,
     {
         let mut num_ty = FieldType::End;
+        let mut last_digit = 0;
         let mut suffix_idx = 0;
 
         for (i, ch) in self.input.char_indices() {
@@ -152,9 +167,12 @@ impl<'re> Deserializer<'re> {
                 break;
             }
 
-            // If reached end of data
+            if ch.is_digit(10) {
+                last_digit = i;
+            }
+
             if ch == ',' || ch == ']' || ch == '}' {
-                suffix_idx = i;
+                suffix_idx = last_digit + 1;
                 num_ty = FieldType::Int;
                 break;
             }
@@ -163,10 +181,11 @@ impl<'re> Deserializer<'re> {
         // Seems like there was no number suffix or an end to the compound or array??
         if num_ty == FieldType::End {
             return Err(Error::Eof {
-                at: self.curr_key
+                at: self
+                    .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: Some(self.current_index())
+                index: Some(self.current_index()),
             });
         }
 
@@ -180,16 +199,17 @@ impl<'re> Deserializer<'re> {
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: Some(self.current_index())
+                index: Some(self.current_index()),
             });
         }
 
-        let num_str = &self.input[..suffix_idx];
+        let (first_num_char, _) = self.peek_char_with_index()?;
+        let num_str = &self.input[first_num_char..suffix_idx];
 
         // Skip over number and that pesky suffix if it exists
         self.skip(suffix_idx + if num_ty != FieldType::Int { 1 } else { 0 })?;
 
-        println!("{num_str} of type {num_ty}");
+        println!("{num_str:?} of type {num_ty}");
 
         match num_ty {
             FieldType::Byte => {
@@ -201,7 +221,7 @@ impl<'re> Deserializer<'re> {
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
-                        index: Some(self.current_index())
+                        index: Some(self.current_index()),
                     })?;
                 visitor.visit_i8(parsed)
             }
@@ -214,11 +234,13 @@ impl<'re> Deserializer<'re> {
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
-                        index: Some(self.current_index())
+                        index: Some(self.current_index()),
                     })?;
                 visitor.visit_i16(parsed)
             }
             FieldType::Int => {
+                println!("num_str: {num_str:?}");
+
                 let parsed = num_str
                     .parse::<i32>()
                     .map_err(|error| Error::ParseIntError {
@@ -227,7 +249,7 @@ impl<'re> Deserializer<'re> {
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
-                        index: Some(self.current_index())
+                        index: Some(self.current_index()),
                     })?;
                 visitor.visit_i32(parsed)
             }
@@ -240,7 +262,7 @@ impl<'re> Deserializer<'re> {
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
-                        index: Some(self.current_index())
+                        index: Some(self.current_index()),
                     })?;
                 visitor.visit_i64(parsed)
             }
@@ -253,7 +275,7 @@ impl<'re> Deserializer<'re> {
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
-                        index: Some(self.current_index())
+                        index: Some(self.current_index()),
                     })?;
                 visitor.visit_f32(parsed)
             }
@@ -266,7 +288,7 @@ impl<'re> Deserializer<'re> {
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
-                        index: Some(self.current_index())
+                        index: Some(self.current_index()),
                     })?;
                 visitor.visit_f64(parsed)
             }
@@ -292,9 +314,15 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
             '0'..='9' => self.parse_number(visitor, None),
             '"' => self.deserialize_string(visitor),
             other => {
-                println!("Encountered {other}");
-                println!("next: {} {}", self.next_char()?, self.next_char()?);
-                todo!()
+                return Err(Error::ExpectedSymbol {
+                    found: other,
+                    expected: None,
+                    at: self
+                        .curr_key
+                        .take()
+                        .unwrap_or_else(|| String::from("unknown")),
+                    index: Some(self.current_index()),
+                });
             }
         }
     }
@@ -303,14 +331,16 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
     where
         V: Visitor<'de>,
     {
-        let byte = self.next_char()?.to_digit(10).ok_or_else(|| {
-            Error::ExpectedInteger {
-                at: self.curr_key
+        let byte = self
+            .next_char()?
+            .to_digit(10)
+            .ok_or_else(|| Error::ExpectedInteger {
+                at: self
+                    .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: Some(self.current_index())
-            }
-        })?;
+                index: Some(self.current_index()),
+            })?;
 
         visitor.visit_bool(byte == 1)
     }
@@ -399,7 +429,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: Some(self.current_index())
+            index: Some(self.current_index()),
         })
     }
 
@@ -413,7 +443,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            index: Some(self.current_index())
+            index: Some(self.current_index()),
         })
     }
 
@@ -423,7 +453,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
     {
         let v = self.parse_string()?.to_owned();
         if self.is_key {
-            println!("key: {v}");
+            println!("key: {v:?}");
             self.curr_key = Some(v.clone());
         }
 
@@ -574,13 +604,13 @@ impl<'de> de::MapAccess<'de> for MapDeserializer<'_, '_> {
         if self.first && first_char != '{' {
             return Err(Error::ExpectedSymbol {
                 found: first_char,
-                expected: '{',
+                expected: Some('{'),
                 at: self
                     .de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: Some(self.de.current_index())
+                index: Some(self.de.current_index()),
             });
         } else if first_char == '}' {
             // Map finished
@@ -588,13 +618,13 @@ impl<'de> de::MapAccess<'de> for MapDeserializer<'_, '_> {
         } else if !self.first && first_char != ',' {
             return Err(Error::ExpectedSymbol {
                 found: first_char,
-                expected: ',',
+                expected: Some(','),
                 at: self
                     .de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: Some(self.de.current_index())
+                index: Some(self.de.current_index()),
             });
         }
 
@@ -612,13 +642,13 @@ impl<'de> de::MapAccess<'de> for MapDeserializer<'_, '_> {
         if colon != ':' {
             return Err(Error::ExpectedSymbol {
                 found: colon,
-                expected: ':',
+                expected: Some(':'),
                 at: self
                     .de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: Some(self.de.current_index())
+                index: Some(self.de.current_index()),
             });
         }
 
@@ -655,26 +685,26 @@ impl<'de> de::SeqAccess<'de> for ArrayDeserializer<'_, '_> {
         if self.first && first_char != '[' {
             return Err(Error::ExpectedSymbol {
                 found: first_char,
-                expected: '[',
+                expected: Some('['),
                 at: self
                     .de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: Some(self.de.current_index())
+                index: Some(self.de.current_index()),
             });
         } else if first_char == ']' {
             return Ok(None);
         } else if !self.first && first_char != ',' {
             return Err(Error::ExpectedSymbol {
                 found: first_char,
-                expected: ',',
+                expected: Some(','),
                 at: self
                     .de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-                index: Some(self.de.current_index())
+                index: Some(self.de.current_index()),
             });
         }
 

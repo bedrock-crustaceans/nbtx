@@ -135,13 +135,17 @@ impl Display for FieldType {
 }
 
 impl FieldType {
-    pub(crate) fn try_from(v: u8, at: &mut Option<String>, at_index: Option<usize>) -> Result<Self> {
+    pub(crate) fn try_from(
+        v: u8,
+        at: &mut Option<String>,
+        at_index: Option<usize>,
+    ) -> Result<Self> {
         const LAST_DISC: u8 = FieldType::LongArray as u8;
         if v > LAST_DISC {
             return Err(Error::TypeOutOfRange {
                 found: v,
                 at: at.take().unwrap_or_else(|| String::from("unknown")),
-                index: at_index
+                index: at_index,
             });
         }
 

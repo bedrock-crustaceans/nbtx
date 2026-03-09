@@ -13,14 +13,14 @@ pub enum Error {
     #[error(
         "unknown tag type was encountered `{found:#0x}` at `{at}`, it should be in the range 0-12"
     )]
-    TypeOutOfRange { 
+    TypeOutOfRange {
         /// The found type
-        found: u8, 
+        found: u8,
         /// The name of the field being serialised/deserialised.
         at: String,
         /// The index in in the buffer/string where this error occurred.
         /// This is none when serialising.
-        index: Option<usize>
+        index: Option<usize>,
     },
     /// Found a type different from the type that was expected.
     #[error("expected tag of type {expected}, received {actual} at field `{at}`)")]
@@ -33,7 +33,7 @@ pub enum Error {
         at: String,
         /// The index in in the buffer/string where this error occurred.
         /// This is none when serialising.
-        index: Option<usize>
+        index: Option<usize>,
     },
     #[error("unexpected end tag found at `{at}`")]
     UnexpectedEnd {
@@ -41,7 +41,7 @@ pub enum Error {
         at: String,
         /// The index in in the buffer/string where this error occurred.
         /// This is none when serialising.
-        index: Option<usize>
+        index: Option<usize>,
     },
     /// The requested operation is not supported.
     #[error("`{op}` at field `{at}`")]
@@ -52,7 +52,7 @@ pub enum Error {
         at: String,
         /// The index in in the buffer/string where this error occurred.
         /// This is none when serialising.
-        index: Option<usize>
+        index: Option<usize>,
     },
     #[error("expected a valid number at `{at}`")]
     ExpectedInteger {
@@ -60,7 +60,7 @@ pub enum Error {
         at: String,
         /// The index in in the buffer/string where this error occurred.
         /// This is none when serialising.
-        index: Option<usize>
+        index: Option<usize>,
     },
     /// Integer is too large to fit in the given type
     #[error("integer `{value}` is too large for type {ty} at `{at}`")]
@@ -71,7 +71,7 @@ pub enum Error {
         at: String,
         /// The index in in the buffer/string where this error occurred.
         /// This is none when serialising.
-        index: Option<usize>
+        index: Option<usize>,
     },
     #[error("{0}")]
     Other(String),
@@ -81,17 +81,17 @@ pub enum Error {
         at: String,
         /// The index in in the buffer/string where this error occurred.
         /// This is none when serialising.
-        index: Option<usize>
+        index: Option<usize>,
     },
-    #[error("expected '{expected}', found '{found}', at `{at}`")]
+    #[error("encountered unexpected symbol '{found}', at `{at}`")]
     ExpectedSymbol {
         found: char,
-        expected: char,
+        expected: Option<char>,
         /// The name of the field being serialised/deserialised.
         at: String,
         /// The index in in the buffer/string where this error occurred.
         /// This is none when serialising.
-        index: Option<usize>
+        index: Option<usize>,
     },
     #[error("failed to parse int: \"{error}\" at `{at}`")]
     ParseIntError {
@@ -100,7 +100,7 @@ pub enum Error {
         at: String,
         /// The index in in the buffer/string where this error occurred.
         /// This is none when serialising.
-        index: Option<usize>
+        index: Option<usize>,
     },
     #[error("failed to parse float: \"{error}\" at `{at}`")]
     ParseFloatError {
@@ -109,7 +109,7 @@ pub enum Error {
         at: String,
         /// The index in in the buffer/string where this error occurred.
         /// This is none when serialising.
-        index: Option<usize>
+        index: Option<usize>,
     },
 }
 
@@ -125,7 +125,7 @@ impl From<std::io::Error> for Error {
             // TODO: How should I retrieve the current field name?
             Error::Eof {
                 at: "unknown".to_string(),
-                index: None
+                index: None,
             }
         } else {
             Error::Other(value.to_string())
