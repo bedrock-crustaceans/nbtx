@@ -18,10 +18,10 @@ mod test;
 mod error;
 mod nbt;
 
-// #[cfg(feature = "snbt")]
+#[cfg(feature = "snbt")]
 pub mod snbt;
-// #[cfg(feature = "snbt")]
-pub use snbt::{de::from_string, ser::to_string};
+#[cfg(feature = "snbt")]
+pub use snbt::{from_string, to_string};
 
 mod value;
 

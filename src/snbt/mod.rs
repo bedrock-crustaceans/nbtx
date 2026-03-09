@@ -1,5 +1,11 @@
-pub mod de;
-pub mod ser;
+//! Implements stringified NBT support. This is the human-readable NBT format that is often
+//! used in Minecraft commands.
+
+mod de;
+mod ser;
+
+pub use de::{Deserializer, from_string};
+pub use ser::{Serializer, to_string};
 
 #[cfg(test)]
 mod tests {

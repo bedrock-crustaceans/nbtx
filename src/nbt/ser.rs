@@ -13,7 +13,7 @@ use crate::{EndiannessImpl, Error, FieldType, NetworkLittleEndian, Variant};
 macro_rules! forward_unsupported {
     ($($ty: ident),+) => {
         paste! {$(
-            #[inline]
+
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), Error> {
                 Err(Error::Unsupported {
                     op: concat!("serialization of `", stringify!($ty), "` is not supported"),
@@ -29,7 +29,7 @@ macro_rules! forward_unsupported {
 macro_rules! forward_unsupported_field {
     ($($ty: ident),+) => {
         paste! {$(
-            #[inline]
+
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<bool, Error> {
                 Err(Error::Unsupported {
                     op: concat!("serialization of `", stringify!($ty), "` is not supported"),
@@ -125,7 +125,7 @@ where
 /// # Ok(())
 /// # }
 /// ```
-#[inline]
+
 pub fn to_net_bytes<T>(v: &T) -> Result<Vec<u8>, Error>
 where
     T: ?Sized + Serialize,
@@ -156,7 +156,7 @@ where
 /// # Ok(())
 /// # }
 /// ```
-#[inline]
+
 pub fn to_net_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), Error>
 where
     W: WriteBytesExt,
@@ -186,7 +186,7 @@ where
 /// # Ok(())
 /// # }
 /// ```
-#[inline]
+
 pub fn to_be_bytes<T>(v: &T) -> Result<Vec<u8>, Error>
 where
     T: ?Sized + Serialize,
@@ -217,7 +217,7 @@ where
 /// # Ok(())
 /// # }
 /// ```
-#[inline]
+
 pub fn to_be_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), Error>
 where
     W: WriteBytesExt,
@@ -247,7 +247,7 @@ where
 /// # Ok(())
 /// # }
 /// ```
-#[inline]
+
 pub fn to_le_bytes<T>(v: &T) -> Result<Vec<u8>, Error>
 where
     T: ?Sized + Serialize,
@@ -278,7 +278,7 @@ where
 /// # Ok(())
 /// # }
 /// ```
-#[inline]
+
 pub fn to_le_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), Error>
 where
     W: WriteBytesExt,
@@ -311,7 +311,7 @@ where
     E: EndiannessImpl,
 {
     /// Creates a new and empty serializer.
-    #[inline]
+
     pub const fn new(w: W) -> Serializer<W, E> {
         Serializer {
             writer: w,
@@ -323,7 +323,7 @@ where
     }
 
     /// Consumes the serialiser and returns the inner writer.
-    #[inline]
+
     pub fn into_inner(self) -> W {
         self.writer
     }
@@ -347,19 +347,16 @@ where
 
     forward_unsupported!(char, u8, u16, u32, u64, u128, i128);
 
-    #[inline]
     fn serialize_bool(self, v: bool) -> Result<(), Error> {
         self.writer.write_u8(v as u8)?;
         Ok(())
     }
 
-    #[inline]
     fn serialize_i8(self, v: i8) -> Result<(), Error> {
         self.writer.write_i8(v)?;
         Ok(())
     }
 
-    #[inline]
     fn serialize_i16(self, v: i16) -> Result<(), Error> {
         match E::AS_ENUM {
             Variant::BigEndian => self.writer.write_i16::<BigEndian>(v)?,
@@ -371,7 +368,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn serialize_i32(self, v: i32) -> Result<(), Error> {
         match E::AS_ENUM {
             Variant::BigEndian => self.writer.write_i32::<BigEndian>(v)?,
@@ -382,7 +378,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn serialize_i64(self, v: i64) -> Result<(), Error> {
         match E::AS_ENUM {
             Variant::BigEndian => self.writer.write_i64::<BigEndian>(v)?,
@@ -393,7 +388,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn serialize_f32(self, v: f32) -> Result<(), Error> {
         match E::AS_ENUM {
             Variant::BigEndian => self.writer.write_f32::<BigEndian>(v)?,
@@ -405,7 +399,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn serialize_f64(self, v: f64) -> Result<(), Error> {
         match E::AS_ENUM {
             Variant::BigEndian => self.writer.write_f64::<BigEndian>(v)?,
@@ -417,7 +410,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn serialize_str(self, v: &str) -> Result<(), Error> {
         match E::AS_ENUM {
             Variant::BigEndian => self.writer.write_u16::<BigEndian>(v.len() as u16),
@@ -429,7 +421,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn serialize_bytes(self, v: &[u8]) -> Result<(), Error> {
         match E::AS_ENUM {
             Variant::BigEndian => self.writer.write_i32::<BigEndian>(v.len() as i32),
@@ -491,7 +482,6 @@ where
         })
     }
 
-    #[inline]
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
         if let Some(len) = len {
             self.len = len;
@@ -508,7 +498,6 @@ where
         }
     }
 
-    #[inline]
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
         self.len = len;
         Ok(self)
@@ -598,7 +587,6 @@ where
     type Ok = ();
     type Error = Error;
 
-    #[inline]
     fn serialize_element<T>(&mut self, element: &T) -> Result<(), Error>
     where
         T: ?Sized + Serialize,
@@ -618,7 +606,6 @@ where
         element.serialize(&mut **self)
     }
 
-    #[inline]
     fn end(self) -> Result<(), Error> {
         Ok(())
     }
@@ -632,7 +619,6 @@ where
     type Ok = ();
     type Error = Error;
 
-    #[inline]
     fn serialize_element<T>(&mut self, element: &T) -> Result<(), Error>
     where
         T: ?Sized + Serialize,
@@ -652,7 +638,6 @@ where
         element.serialize(&mut **self)
     }
 
-    #[inline]
     fn end(self) -> Result<(), Error> {
         Ok(())
     }
@@ -666,7 +651,7 @@ where
     type Ok = ();
     type Error = Error;
 
-    /// This function *must* not be used. Use [`serialize_key`](Self::serialize_key) instead.
+    /// Use `serialize_entry` instead.
     fn serialize_key<K>(&mut self, _key: &K) -> Result<(), Error>
     where
         K: ?Sized + Serialize,
@@ -681,7 +666,7 @@ where
         })
     }
 
-    /// This function *must* not be used. Use [`serialize_key`](Self::serialize_key) instead.
+    /// Use `serialize_entry` instead.
     fn serialize_value<V>(&mut self, _value: &V) -> Result<(), Error>
     where
         V: ?Sized + Serialize,
@@ -708,7 +693,6 @@ where
         value.serialize(&mut **self)
     }
 
-    #[inline]
     fn end(self) -> Result<(), Error> {
         self.writer.write_u8(FieldType::End as u8)?;
         Ok(())
@@ -744,7 +728,6 @@ where
         }
     }
 
-    #[inline]
     fn end(self) -> Result<(), Error> {
         self.writer.write_u8(FieldType::End as u8)?;
         Ok(())
@@ -791,19 +774,16 @@ where
 
     forward_unsupported_field!(char, u8, u16, u32, u64, i128);
 
-    #[inline]
     fn serialize_bool(self, _v: bool) -> Result<bool, Self::Error> {
         self.ser.writer.write_u8(FieldType::Byte as u8)?;
         Ok(false)
     }
 
-    #[inline]
     fn serialize_i8(self, _v: i8) -> Result<Self::Ok, Self::Error> {
         self.ser.writer.write_u8(FieldType::Byte as u8)?;
         Ok(false)
     }
 
-    #[inline]
     fn serialize_i16(self, _v: i16) -> Result<Self::Ok, Self::Error> {
         self.ser.writer.write_u8(FieldType::Short as u8)?;
         Ok(false)
@@ -967,13 +947,11 @@ where
         })
     }
 
-    #[inline]
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
         self.ser.writer.write_u8(FieldType::Compound as u8)?;
         Ok(self)
     }
 
-    #[inline]
     fn serialize_struct(
         self,
         _name: &'static str,
@@ -1010,7 +988,6 @@ where
     type Ok = bool;
     type Error = Error;
 
-    #[inline]
     fn serialize_element<T>(&mut self, _element: &T) -> Result<(), Error>
     where
         T: ?Sized + Serialize,
@@ -1018,7 +995,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn end(self) -> Result<bool, Self::Error> {
         Ok(false)
     }
@@ -1032,7 +1008,6 @@ where
     type Ok = bool;
     type Error = Error;
 
-    #[inline]
     fn serialize_element<T>(&mut self, _element: &T) -> Result<(), Error>
     where
         T: ?Sized + Serialize,
@@ -1040,7 +1015,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn end(self) -> Result<bool, Self::Error> {
         Ok(false)
     }
@@ -1054,7 +1028,6 @@ where
     type Ok = bool;
     type Error = Error;
 
-    #[inline]
     fn serialize_key<K>(&mut self, _key: &K) -> Result<(), Error>
     where
         K: ?Sized + Serialize,
@@ -1062,7 +1035,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn serialize_value<V>(&mut self, _value: &V) -> Result<(), Error>
     where
         V: ?Sized + Serialize,
@@ -1070,7 +1042,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn end(self) -> Result<bool, Self::Error> {
         Ok(false)
     }
@@ -1084,7 +1055,6 @@ where
     type Ok = bool;
     type Error = Error;
 
-    #[inline]
     fn serialize_field<V>(&mut self, _key: &'static str, _value: &V) -> Result<(), Error>
     where
         V: ?Sized + Serialize,
@@ -1092,7 +1062,6 @@ where
         Ok(())
     }
 
-    #[inline]
     fn end(self) -> Result<bool, Self::Error> {
         Ok(false)
     }
