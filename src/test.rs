@@ -15,12 +15,6 @@ const BIG_TEST_NBT: &[u8] = include_bytes!("../test/bigtest.nbt");
 const HELLO_WORLD_NBT: &[u8] = include_bytes!("../test/hello_world.nbt");
 const PLAYER_NAN_VALUE_NBT: &[u8] = include_bytes!("../test/player_nan_value.nbt");
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-struct Wrong {
-    optional: Option<i32>,
-    required: i8,
-}
-
 #[test]
 fn read_write_option() {
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -143,14 +137,14 @@ fn read_write_bigtest() {
         short_test: i16,
     }
 
-    let mut big_test_nbt = Cursor::new(BIG_TEST_NBT.as_ref());
+    let mut big_test_nbt = Cursor::new(BIG_TEST_NBT);
     let decoded: AllTypes = from_be_bytes(&mut big_test_nbt).unwrap();
 
     let encoded = to_bytes::<BigEndian>(&decoded).unwrap();
     let mut encoded = Cursor::new(encoded.as_slice());
     let _decoded2: AllTypes = from_be_bytes(&mut encoded).unwrap();
 
-    let mut big_test_nbt = Cursor::new(BIG_TEST_NBT.as_ref());
+    let mut big_test_nbt = Cursor::new(BIG_TEST_NBT);
     let value: Value = from_be_bytes(&mut big_test_nbt).unwrap();
 
     let value_encoded = to_bytes::<NetworkLittleEndian>(&value).unwrap();

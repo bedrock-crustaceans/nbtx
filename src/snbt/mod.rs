@@ -12,6 +12,7 @@ mod tests {
         snbt::{de::Deserializer, ser::Serializer},
     };
 
+    #[allow(dead_code)]
     #[derive(Debug, Copy, Clone, serde::Serialize)]
     enum Test {
         A,
@@ -83,8 +84,9 @@ mod tests {
 
         let mut ser = Serializer::new();
         value.serialize(&mut ser).unwrap();
-        
+
         let output = ser.output.clone();
+        println!("output: {output}");
 
         let mut de = Deserializer::new(&output);
         let out: Value = Value::deserialize(&mut de).unwrap();

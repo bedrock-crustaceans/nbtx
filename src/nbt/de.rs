@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::marker::PhantomData;
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
@@ -16,7 +15,9 @@ macro_rules! is_ty {
             return Err(Error::UnexpectedType {
                 expected: FieldType::$expected,
                 actual: $actual,
-                at: $field_name.take().unwrap_or_else(|| String::from("unknown")),
+                at: $field_name
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
             });
         }
     };
@@ -26,7 +27,7 @@ macro_rules! is_ty {
 macro_rules! forward_unsupported {
     ($($ty: ident),+) => {
         paste! {$(
-            
+
             fn [<deserialize_ $ty>]<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
             where
                 V: Visitor<'de>
@@ -97,7 +98,6 @@ where
 /// Reads a single object of type `T` from the given buffer.
 ///
 /// On success, the deserialized object and number of bytes read from the buffer are returned.
-
 pub fn from_bytes<'de, 're, F, T>(reader: &'re mut impl ReadBytesExt) -> Result<T, Error>
 where
     T: Deserialize<'de>,
@@ -137,7 +137,6 @@ where
 ///  println!("Got {data:?}!");
 /// # }
 /// ```
-
 pub fn from_le_bytes<'de, T, R>(reader: &mut R) -> Result<T, Error>
 where
     R: ReadBytesExt,
@@ -174,7 +173,6 @@ where
 ///  println!("Got {data:?}!");
 /// # }
 /// ```
-
 pub fn from_be_bytes<'de, T, R>(reader: &mut R) -> Result<T, Error>
 where
     R: ReadBytesExt,
@@ -211,7 +209,6 @@ where
 ///  println!("Got {data:?}!");
 /// # }
 /// ```
-
 pub fn from_net_bytes<'data, T, R>(reader: &mut R) -> Result<T, Error>
 where
     R: ReadBytesExt,
@@ -254,7 +251,6 @@ where
         }
     }
 
-    
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -265,7 +261,6 @@ where
         visitor.visit_bool(n)
     }
 
-    
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -276,7 +271,6 @@ where
         visitor.visit_i8(n)
     }
 
-    
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -291,7 +285,6 @@ where
         visitor.visit_i16(n)
     }
 
-    
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -307,7 +300,6 @@ where
         visitor.visit_i32(n)
     }
 
-    
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -323,7 +315,6 @@ where
         visitor.visit_i64(n)
     }
 
-    
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -338,7 +329,6 @@ where
         visitor.visit_f32(n)
     }
 
-    
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -353,18 +343,19 @@ where
         visitor.visit_f64(n)
     }
 
-    
     fn deserialize_str<V>(self, _visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
     {
         Err(Error::Unsupported {
             op: "deserializing string references is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
-    
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -394,7 +385,10 @@ where
     {
         Err(Error::Unsupported {
             op: "deserializing byte slices is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
 
         // is_ty!(ByteArray, self.field_name, self.next_ty);
@@ -431,7 +425,6 @@ where
         visitor.visit_byte_buf(buf)
     }
 
-    
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -448,7 +441,10 @@ where
     {
         Err(Error::Unsupported {
             op: "deserializing unit values is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -458,7 +454,10 @@ where
     {
         Err(Error::Unsupported {
             op: "deserializing unit structs is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -472,11 +471,13 @@ where
     {
         Err(Error::Unsupported {
             op: "deserializing newtype structs is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
-    
     fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -484,7 +485,6 @@ where
         self.deserialize_tuple(0, visitor)
     }
 
-    
     fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -511,11 +511,13 @@ where
     {
         Err(Error::Unsupported {
             op: "deserializing tuple structs is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
-    
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -526,7 +528,6 @@ where
         visitor.visit_map(de)
     }
 
-    
     fn deserialize_struct<V>(
         self,
         _name: &'static str,
@@ -550,11 +551,13 @@ where
     {
         Err(Error::Unsupported {
             op: "deserializing enums is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
-    
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -562,7 +565,6 @@ where
         self.deserialize_string(visitor)
     }
 
-    
     fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
@@ -570,7 +572,6 @@ where
         self.deserialize_any(visitor)
     }
 
-    
     fn is_human_readable(&self) -> bool {
         false
     }
@@ -596,7 +597,6 @@ where
     R: ReadBytesExt,
     F: EndiannessImpl,
 {
-    
     pub fn new(
         de: &'a mut Deserializer<'re, 'de, F, R>,
         ty: FieldType,
@@ -614,7 +614,11 @@ where
         };
 
         if expected_len != 0 && expected_len != remaining {
-            return Err(Error::Eof(de.curr_key.take().unwrap_or_else(|| String::from("unknown"))))
+            return Err(Error::Eof(
+                de.curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+            ));
         }
 
         Ok(Self { de, ty, remaining })
@@ -628,7 +632,6 @@ where
 {
     type Error = Error;
 
-    
     fn next_element_seed<E>(&mut self, seed: E) -> Result<Option<E::Value>, Error>
     where
         E: DeserializeSeed<'de>,
@@ -661,7 +664,6 @@ where
     R: ReadBytesExt,
     F: EndiannessImpl,
 {
-    
     fn from(v: &'a mut Deserializer<'re, 'de, F, R>) -> Self {
         Self { de: v }
     }
@@ -673,7 +675,7 @@ where
     F: EndiannessImpl,
 {
     type Error = Error;
-    
+
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Error>
     where
         K: DeserializeSeed<'de>,
@@ -694,7 +696,6 @@ where
         r
     }
 
-    
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Error>
     where
         V: DeserializeSeed<'de>,

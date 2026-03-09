@@ -1,6 +1,4 @@
-use std::ops::{Index, Range, RangeFrom};
-
-use serde::de::{self, MapAccess, Visitor};
+use serde::de::{self, Visitor};
 
 use crate::{Error, FieldType};
 
@@ -22,7 +20,11 @@ impl<'re> Deserializer<'re> {
 
     fn skip(&mut self, n: usize) -> Result<(), Error> {
         if self.input.len() <= n {
-            return Err(Error::Eof(self.curr_key.take().unwrap_or_else(|| String::from("unknown"))))
+            return Err(Error::Eof(
+                self.curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+            ));
         }
 
         self.input = &self.input[n..];
@@ -30,7 +32,11 @@ impl<'re> Deserializer<'re> {
     }
 
     fn peek_char(&mut self) -> Result<char, Error> {
-        self.input.chars().next().ok_or(Error::Eof(self.curr_key.take().unwrap_or_else(|| String::from("unknown"))))
+        self.input.chars().next().ok_or(Error::Eof(
+            self.curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
+        ))
     }
 
     fn next_char(&mut self) -> Result<char, Error> {
@@ -46,19 +52,26 @@ impl<'re> Deserializer<'re> {
             let first_quote = self.next_char()?;
             if first_quote != '"' {
                 return Err(Error::ExpectedSymbol {
-                    found: first_quote, 
+                    found: first_quote,
                     expected: '"',
-                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-                })
+                    at: self
+                        .curr_key
+                        .take()
+                        .unwrap_or_else(|| String::from("unknown")),
+                });
             }
-            
+
             match self.input.find('"') {
                 Some(len) => {
                     let s = &self.input[..len];
                     self.input = &self.input[len + 1..];
                     Ok(s)
                 }
-                None => Err(Error::Eof(self.curr_key.take().unwrap_or_else(|| String::from("unknown"))))
+                None => Err(Error::Eof(
+                    self.curr_key
+                        .take()
+                        .unwrap_or_else(|| String::from("unknown")),
+                )),
             }
         } else if self.is_key {
             // continue until colon
@@ -67,166 +80,165 @@ impl<'re> Deserializer<'re> {
                     let s = &self.input[..len];
                     self.input = &self.input[len..];
                     Ok(s)
-                },
-                None => Err(Error::Eof(self.curr_key.take().unwrap_or_else(|| String::from("unknown"))))
+                }
+                None => Err(Error::Eof(
+                    self.curr_key
+                        .take()
+                        .unwrap_or_else(|| String::from("unknown")),
+                )),
             }
         } else {
-            Err(Error::ExpectedSymbol { 
-                found: self.peek_char()?, 
+            Err(Error::ExpectedSymbol {
+                found: self.peek_char()?,
                 expected: '"',
-                at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")) 
+                at: self
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
             })
         }
     }
 
-    /// Attempts to find the type of number, i.e. byte, short, int, etc... and also parses it.
-    /// 
-    /// Returns an error if the integer is out of range for the given number. Set `desired` to some
-    /// field type if the integer should be of that type.
     fn parse_number<'de, V>(
-        &mut self, visitor: V, desired: Option<FieldType>
-    ) -> Result<V::Value, Error> where V: Visitor<'de> {
-        let negative = self.peek_char()? == '-';
-        if negative {
-            self.skip(1)?;
+        &mut self,
+        visitor: V,
+        desired: Option<FieldType>,
+    ) -> Result<V::Value, Error>
+    where
+        V: Visitor<'de>,
+    {
+        let mut num_ty = FieldType::End;
+        let mut suffix_idx = 0;
+
+        for (i, ch) in self.input.char_indices() {
+            let lower = ch.to_ascii_lowercase();
+            let ty = match lower {
+                'b' => Some(FieldType::Byte),
+                's' => Some(FieldType::Short),
+                'l' => Some(FieldType::Long),
+                'f' => Some(FieldType::Float),
+                'd' => Some(FieldType::Double),
+                _ => None,
+            };
+
+            if let Some(ty) = ty {
+                num_ty = ty;
+                suffix_idx = i;
+                break;
+            }
+
+            // If reached end of data
+            if ch == ',' || ch == ']' || ch == '}' {
+                suffix_idx = i;
+                num_ty = FieldType::Int;
+                break;
+            }
         }
 
-        let mut int = match self.peek_char()? {
-            ch @ '0'..='9' => {
-                (ch as u8 - b'0') as i64
-            },
-            _ => {
-                return Err(Error::ExpectedInteger(self.curr_key.take().unwrap_or_else(|| String::from("unknown"))))
-            }
-        };
-
-        println!("int is {int}");
-
-        while let ch @ '0'..='9' = self.peek_char()? {
-            int
-                .checked_mul(10)
-                .ok_or_else(|| Error::IntegerTooLarge {
-                value: self.input.to_owned(),
-                ty: FieldType::Long,
-                at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-            })?;
-
-            int
-                .checked_add((ch as u8 - b'0') as i64)
-                .ok_or_else(|| Error::IntegerTooLarge {
-                value: self.input.to_owned(),
-                ty: FieldType::Long,
-                at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-            })?;
-
-            self.skip(1)?;
-        };
-
-        // Negate if necessary
-        if negative {
-            int *= -1;
+        // Seems like there was no number suffix or an end to the compound or array??
+        if num_ty == FieldType::End {
+            return Err(Error::Eof(
+                self.curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+            ));
         }
 
-        // Check integer type
-        let ty = self.peek_char()?.to_ascii_lowercase();
+        if let Some(ty) = desired
+            && ty != num_ty
+        {
+            return Err(Error::UnexpectedType {
+                expected: ty,
+                actual: num_ty,
+                at: self
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+            });
+        }
 
-        let num = match ty {
-            'b' => {
-                let byte = i8::try_from(int)
-                    .map_err(|_| {
-                        Error::IntegerTooLarge {
-                            value: self.input.to_owned(),
-                            ty: FieldType::Byte,
-                            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-                        }
+        let num_str = &self.input[..suffix_idx];
+
+        // Skip over number and that pesky suffix if it exists
+        self.skip(suffix_idx + if num_ty != FieldType::Int { 1 } else { 0 })?;
+
+        println!("{num_str} of type {num_ty}");
+
+        match num_ty {
+            FieldType::Byte => {
+                let parsed = num_str
+                    .parse::<i8>()
+                    .map_err(|error| Error::ParseIntError {
+                        error,
+                        at: self
+                            .curr_key
+                            .take()
+                            .unwrap_or_else(|| String::from("unknown")),
                     })?;
-
-                // Verify this is the correct type
-                if let Some(ty) = desired {
-                    if ty != FieldType::Byte {
-                        return Err(Error::UnexpectedType {
-                            actual: FieldType::Byte,
-                            expected: ty,
-                            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-                        })
-                    }   
-                }       
-
-                self.skip(1)?;
-                visitor.visit_i8(byte)
-            },
-            's' => {
-                let short = i16::try_from(int)
-                    .map_err(|_| {
-                        Error::IntegerTooLarge {
-                            value: self.input.to_owned(),
-                            ty: FieldType::Short,
-                            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-                        }
-                    })?;
-
-                    
-                // Verify this is the correct type
-                if let Some(ty) = desired {
-                    if ty != FieldType::Short {
-                        return Err(Error::UnexpectedType {
-                            actual: FieldType::Short,
-                            expected: ty,
-                            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-                        })
-                    }   
-                }
-
-                self.skip(1)?;
-                visitor.visit_i16(short)
-            },
-            // Ints don't have a suffix, so I just try to match for end characters here
-            ',' | ']' | '}' => {
-                let int = i32::try_from(int)
-                    .map_err(|_| {
-                        Error::IntegerTooLarge {
-                            value: self.input.to_owned(),
-                            ty: FieldType::Int,
-                            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-                        }
-                    })?;
-
-                    
-                // Verify this is the correct type
-                if let Some(ty) = desired {
-                    if ty != FieldType::Int {
-                        return Err(Error::UnexpectedType {
-                            actual: FieldType::Int,
-                            expected: ty,
-                            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-                        })
-                    }   
-                }
-
-                visitor.visit_i32(int)
-            },
-            'l' => {
-                // Verify this is the correct type
-                if let Some(ty) = desired {
-                    if ty != FieldType::Long {
-                        return Err(Error::UnexpectedType {
-                            actual: FieldType::Long,
-                            expected: ty,
-                            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-                        })
-                    }   
-                }
-
-                self.skip(1)?;
-                visitor.visit_i64(int as i64)
-            },
-            c => {
-                println!("end char is {c}");
-                todo!();
+                visitor.visit_i8(parsed)
             }
-        };
-
-        num
+            FieldType::Short => {
+                let parsed = num_str
+                    .parse::<i16>()
+                    .map_err(|error| Error::ParseIntError {
+                        error,
+                        at: self
+                            .curr_key
+                            .take()
+                            .unwrap_or_else(|| String::from("unknown")),
+                    })?;
+                visitor.visit_i16(parsed)
+            }
+            FieldType::Int => {
+                let parsed = num_str
+                    .parse::<i32>()
+                    .map_err(|error| Error::ParseIntError {
+                        error,
+                        at: self
+                            .curr_key
+                            .take()
+                            .unwrap_or_else(|| String::from("unknown")),
+                    })?;
+                visitor.visit_i32(parsed)
+            }
+            FieldType::Long => {
+                let parsed = num_str
+                    .parse::<i64>()
+                    .map_err(|error| Error::ParseIntError {
+                        error,
+                        at: self
+                            .curr_key
+                            .take()
+                            .unwrap_or_else(|| String::from("unknown")),
+                    })?;
+                visitor.visit_i64(parsed)
+            }
+            FieldType::Float => {
+                let parsed = num_str
+                    .parse::<f32>()
+                    .map_err(|error| Error::ParseFloatError {
+                        error,
+                        at: self
+                            .curr_key
+                            .take()
+                            .unwrap_or_else(|| String::from("unknown")),
+                    })?;
+                visitor.visit_f32(parsed)
+            }
+            FieldType::Double => {
+                let parsed = num_str
+                    .parse::<f64>()
+                    .map_err(|error| Error::ParseFloatError {
+                        error,
+                        at: self
+                            .curr_key
+                            .take()
+                            .unwrap_or_else(|| String::from("unknown")),
+                    })?;
+                visitor.visit_f64(parsed)
+            }
+            _ => unreachable!("Non-number field type {num_ty:?} encountered"),
+        }
     }
 }
 
@@ -238,7 +250,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
         V: Visitor<'de>,
     {
         if self.is_key {
-            return self.deserialize_string(visitor)
+            return self.deserialize_string(visitor);
         }
 
         match self.peek_char()? {
@@ -258,12 +270,13 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
     where
         V: Visitor<'de>,
     {
-        let byte = self
-            .next_char()?
-            .to_digit(10)
-            .ok_or_else(|| {
-                Error::ExpectedInteger(self.curr_key.take().unwrap_or_else(|| String::from("unknown")))
-            })?;
+        let byte = self.next_char()?.to_digit(10).ok_or_else(|| {
+            Error::ExpectedInteger(
+                self.curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+            )
+        })?;
 
         visitor.visit_bool(byte == 1)
     }
@@ -348,7 +361,10 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
     {
         Err(Error::Unsupported {
             op: "deserializing `char` is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -358,7 +374,10 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
     {
         Err(Error::Unsupported {
             op: "deserializing string references is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -368,6 +387,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
     {
         let v = self.parse_string()?.to_owned();
         if self.is_key {
+            println!("key: {v}");
             self.curr_key = Some(v.clone());
         }
 
@@ -498,7 +518,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
 
 struct MapDeserializer<'a, 're> {
     de: &'a mut Deserializer<'re>,
-    first: bool
+    first: bool,
 }
 
 impl<'a, 're> From<&'a mut Deserializer<'re>> for MapDeserializer<'a, 're> {
@@ -510,31 +530,39 @@ impl<'a, 're> From<&'a mut Deserializer<'re>> for MapDeserializer<'a, 're> {
 impl<'de> de::MapAccess<'de> for MapDeserializer<'_, '_> {
     type Error = Error;
 
-    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Error> 
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Error>
     where
-        K: de::DeserializeSeed<'de>
+        K: de::DeserializeSeed<'de>,
     {
         let first_char = self.de.next_char()?;
         if self.first && first_char != '{' {
             return Err(Error::ExpectedSymbol {
-                found: first_char, 
+                found: first_char,
                 expected: '{',
-                at: self.de.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-            })
+                at: self
+                    .de
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+            });
         } else if first_char == '}' {
             // Map finished
-            return Ok(None)
+            return Ok(None);
         } else if !self.first && first_char != ',' {
             return Err(Error::ExpectedSymbol {
-                found: first_char, 
+                found: first_char,
                 expected: ',',
-                at: self.de.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-            })
+                at: self
+                    .de
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+            });
         }
 
         // Check if map is empty
         if self.de.peek_char()? == '}' {
-            return Ok(None)
+            return Ok(None);
         }
 
         self.de.is_key = true;
@@ -547,8 +575,12 @@ impl<'de> de::MapAccess<'de> for MapDeserializer<'_, '_> {
             return Err(Error::ExpectedSymbol {
                 found: colon,
                 expected: ':',
-                at: self.de.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-            })
+                at: self
+                    .de
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+            });
         }
 
         key
@@ -556,20 +588,20 @@ impl<'de> de::MapAccess<'de> for MapDeserializer<'_, '_> {
 
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Error>
     where
-        V: de::DeserializeSeed<'de>
+        V: de::DeserializeSeed<'de>,
     {
-        seed.deserialize(&mut *self.de)   
+        seed.deserialize(&mut *self.de)
     }
 }
 
 struct ArrayDeserializer<'a, 're> {
     de: &'a mut Deserializer<'re>,
-    first: bool
+    first: bool,
 }
 
 impl<'a, 're> From<&'a mut Deserializer<'re>> for ArrayDeserializer<'a, 're> {
     fn from(de: &'a mut Deserializer<'re>) -> Self {
-        Self { de, first: true } 
+        Self { de, first: true }
     }
 }
 
@@ -578,32 +610,40 @@ impl<'de> de::SeqAccess<'de> for ArrayDeserializer<'_, '_> {
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
     where
-        T: de::DeserializeSeed<'de> 
+        T: de::DeserializeSeed<'de>,
     {
         let first_char = self.de.next_char()?;
         if self.first && first_char != '[' {
             return Err(Error::ExpectedSymbol {
-                found: first_char, 
+                found: first_char,
                 expected: '[',
-                at: self.de.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-            })
+                at: self
+                    .de
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+            });
         } else if first_char == ']' {
-            return Ok(None)
+            return Ok(None);
         } else if !self.first && first_char != ',' {
             return Err(Error::ExpectedSymbol {
-                found: first_char, 
+                found: first_char,
                 expected: ',',
-                at: self.de.curr_key.take().unwrap_or_else(|| String::from("unknown"))
-            })
+                at: self
+                    .de
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+            });
         }
 
         // Check whether the array is empty
         if self.de.peek_char()? == ']' {
-            return Ok(None)
+            return Ok(None);
         }
 
         self.first = false;
 
         seed.deserialize(&mut *self.de).map(Some)
-    }   
+    }
 }

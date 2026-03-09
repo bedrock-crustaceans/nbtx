@@ -10,12 +10,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// The encountered NBT tag type is invalid.
-    #[error("unknown tag type was encountered ({actual}) at `{at}`, it should be in the range 0-12")]
+    #[error(
+        "unknown tag type was encountered ({actual}) at `{at}`, it should be in the range 0-12"
+    )]
     TypeOutOfRange { actual: u8, at: String },
     /// Found a type different from the type that was expected.
-    #[error(
-        "expected tag of type {expected}, received {actual} at field `{at}`)"
-    )]
+    #[error("expected tag of type {expected}, received {actual} at field `{at}`)")]
     UnexpectedType {
         /// Type that the deserializer was expecting to find.
         expected: FieldType,
@@ -36,16 +36,16 @@ pub enum Error {
         /// Description of the error
         op: &'static str,
         /// The struct field that the error ocurred at.
-        at: String
+        at: String,
     },
     #[error("expected a valid number at `{0}`")]
     ExpectedInteger(String),
     /// Integer is too large to fit in the given type
     #[error("integer `{value}` is too large for type {ty} at `{at}`")]
     IntegerTooLarge {
-        value: String, 
-        ty: FieldType, 
-        at: String
+        value: String,
+        ty: FieldType,
+        at: String,
     },
     #[error("{0}")]
     Other(String),
@@ -57,8 +57,18 @@ pub enum Error {
     ExpectedSymbol {
         found: char,
         expected: char,
-        at: String
-    }
+        at: String,
+    },
+    #[error("failed to parse int: \"{error}\" at `{at}`")]
+    ParseIntError {
+        error: std::num::ParseIntError,
+        at: String,
+    },
+    #[error("failed to parse float: \"{error}\" at `{at}`")]
+    ParseFloatError {
+        error: std::num::ParseFloatError,
+        at: String,
+    },
 }
 
 impl From<std::io::Error> for Error {

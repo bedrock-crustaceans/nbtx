@@ -8,7 +8,6 @@ pub use crate::nbt::ser::{
 pub use crate::value::Value;
 pub use byteorder::{BigEndian, LittleEndian};
 
-use std::borrow::Cow;
 use std::fmt::{self, Debug, Display};
 
 pub use error::{Error, Result};
@@ -128,7 +127,7 @@ impl Display for FieldType {
             List => "list",
             Compound => "compound",
             IntArray => "int array",
-            LongArray => "long array"
+            LongArray => "long array",
         };
 
         f.write_str(str)
@@ -139,7 +138,10 @@ impl FieldType {
     pub(crate) fn try_from(v: u8, at: &mut Option<String>) -> Result<Self> {
         const LAST_DISC: u8 = FieldType::LongArray as u8;
         if v > LAST_DISC {
-            return Err(Error::TypeOutOfRange { actual: v, at: at.take().unwrap_or_else(|| String::from("unknown")) });
+            return Err(Error::TypeOutOfRange {
+                actual: v,
+                at: at.take().unwrap_or_else(|| String::from("unknown")),
+            });
         }
 
         // SAFETY: Because `Self` is marked as `repr(u8)`, its layout is guaranteed to start

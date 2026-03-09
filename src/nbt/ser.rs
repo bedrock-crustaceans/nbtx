@@ -473,7 +473,10 @@ where
     ) -> Result<(), Error> {
         Err(Error::Unsupported {
             op: "serializing newtype variants is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -485,7 +488,10 @@ where
         } else {
             Err(Error::Unsupported {
                 op: "dynamically sized sequences is not supported",
-                at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+                at: self
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
             })
         }
     }
@@ -503,7 +509,10 @@ where
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
         Err(Error::Unsupported {
             op: "serializing tuple structs is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -516,7 +525,10 @@ where
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
         Err(Error::Unsupported {
             op: "serializing tuple variants is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -555,7 +567,10 @@ where
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
         Err(Error::Unsupported {
             op: "serializing struct variants is not supported",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 }
@@ -643,7 +658,10 @@ where
     {
         Err(Error::Unsupported {
             op: "Serializer::serialize_key is not supported. Use Serializer::serialize_entry instead",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -654,7 +672,10 @@ where
     {
         Err(Error::Unsupported {
             op: "Serializer::serialize_value is not supported. Use Serializer::serialize_entry instead",
-            at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -813,14 +834,22 @@ where
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
         Err(Error::Unsupported {
             op: "serializing unit is not supported",
-            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .ser
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
     fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
         Err(Error::Unsupported {
             op: "serializing unit structs is not supported",
-            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .ser
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -832,7 +861,11 @@ where
     ) -> Result<Self::Ok, Self::Error> {
         Err(Error::Unsupported {
             op: "serializing unit variants is not supported",
-            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .ser
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -843,7 +876,11 @@ where
     ) -> Result<Self::Ok, Self::Error> {
         Err(Error::Unsupported {
             op: "Serializing newtype structs is not supported",
-            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .ser
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -856,7 +893,11 @@ where
     ) -> Result<Self::Ok, Self::Error> {
         Err(Error::Unsupported {
             op: "serializing newtype variants is not supported",
-            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .ser
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -877,7 +918,11 @@ where
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
         Err(Error::Unsupported {
             op: "serializing tuple structs is not supported",
-            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .ser
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -890,7 +935,11 @@ where
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
         Err(Error::Unsupported {
             op: "serializing tuple variants is not supported",
-            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .ser
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 
@@ -919,7 +968,11 @@ where
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
         Err(Error::Unsupported {
             op: "serializing struct variants is not supported",
-            at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+            at: self
+                .ser
+                .curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
         })
     }
 }
