@@ -18,6 +18,7 @@ macro_rules! is_ty {
                 at: $field_name
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                index: None
             });
         }
     };
@@ -34,7 +35,8 @@ macro_rules! forward_unsupported {
             {
                 Err(Error::Unsupported {
                     op: concat!("deserialization of `", stringify!($ty), "` is not supported"),
-                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")),
+                    index: None
                 })
             }
         )+}
@@ -62,12 +64,13 @@ where
 {
     /// Creates a new deserializer, consuming the reader.
     pub fn new(input: &'re mut R) -> Result<Self, Error> {
-        let next_ty = FieldType::try_from(input.read_u8()?, &mut None)?;
+        let next_ty = FieldType::try_from(input.read_u8()?, &mut None, Some(0))?;
         if next_ty != FieldType::Compound {
             return Err(Error::UnexpectedType {
                 actual: next_ty,
                 expected: FieldType::Compound,
                 at: String::from("root"),
+                index: Some(0)
             });
         }
 
@@ -234,7 +237,10 @@ where
             self.deserialize_string(visitor)
         } else {
             match self.next_ty {
-                FieldType::End => Err(Error::UnexpectedEnd),
+                FieldType::End => Err(Error::UnexpectedEnd {
+                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")),
+                    index: None
+                }),
                 FieldType::Byte => self.deserialize_i8(visitor),
                 FieldType::Short => self.deserialize_i16(visitor),
                 FieldType::Int => self.deserialize_i32(visitor),
@@ -353,6 +359,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -389,6 +396,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
 
         // is_ty!(ByteArray, self.field_name, self.next_ty);
@@ -445,6 +453,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -458,6 +467,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -475,6 +485,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -493,7 +504,7 @@ where
             FieldType::ByteArray => FieldType::Byte,
             FieldType::IntArray => FieldType::Int,
             FieldType::LongArray => FieldType::Long,
-            _ => FieldType::try_from(self.input.read_u8()?, &mut self.curr_key)?,
+            _ => FieldType::try_from(self.input.read_u8()?, &mut self.curr_key, None)?,
         };
 
         let de = SeqDeserializer::new(self, ty, len as u32)?;
@@ -515,6 +526,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -555,6 +567,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -614,11 +627,12 @@ where
         };
 
         if expected_len != 0 && expected_len != remaining {
-            return Err(Error::Eof(
-                de.curr_key
+            return Err(Error::Eof {
+                at: de.curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
-            ));
+                index: None
+            });
         }
 
         Ok(Self { de, ty, remaining })
@@ -683,7 +697,7 @@ where
         self.de.is_key = true;
         self.de.next_ty = FieldType::String;
 
-        let next_ty = FieldType::try_from(self.de.input.read_u8()?, &mut self.de.curr_key)?;
+        let next_ty = FieldType::try_from(self.de.input.read_u8()?, &mut self.de.curr_key, None)?;
 
         let r = if next_ty == FieldType::End {
             Ok(None)

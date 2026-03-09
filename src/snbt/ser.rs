@@ -11,7 +11,8 @@ macro_rules! forward_unsupported {
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), Error> {
                 Err(Error::Unsupported {
                     op: concat!("serialization of `", stringify!($ty), "` is not supported"),
-                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")),
+                    index: None
                 })
             }
         )+}
@@ -185,6 +186,7 @@ impl ser::Serializer for &mut Serializer {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -206,6 +208,7 @@ impl ser::Serializer for &mut Serializer {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -220,6 +223,7 @@ impl ser::Serializer for &mut Serializer {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -236,6 +240,7 @@ impl ser::Serializer for &mut Serializer {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -268,6 +273,7 @@ impl ser::Serializer for &mut Serializer {
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 }

@@ -17,7 +17,8 @@ macro_rules! forward_unsupported {
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), Error> {
                 Err(Error::Unsupported {
                     op: concat!("serialization of `", stringify!($ty), "` is not supported"),
-                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")),
+                    index: None
                 })
             }
         )+}
@@ -32,7 +33,8 @@ macro_rules! forward_unsupported_field {
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<bool, Error> {
                 Err(Error::Unsupported {
                     op: concat!("serialization of `", stringify!($ty), "` is not supported"),
-                    at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown"))
+                    at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown")),
+                    index: None
                 })
             }
         )+}
@@ -477,6 +479,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -492,6 +495,7 @@ where
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                index: None
             })
         }
     }
@@ -513,6 +517,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -529,6 +534,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -571,6 +577,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 }
@@ -662,6 +669,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -676,6 +684,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -839,6 +848,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -850,6 +860,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -866,6 +877,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -881,6 +893,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -898,6 +911,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -923,6 +937,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -940,6 +955,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 
@@ -973,6 +989,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            index: None
         })
     }
 }

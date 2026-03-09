@@ -11,9 +11,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     /// The encountered NBT tag type is invalid.
     #[error(
-        "unknown tag type was encountered ({actual}) at `{at}`, it should be in the range 0-12"
+        "unknown tag type was encountered `{found:#0x}` at `{at}`, it should be in the range 0-12"
     )]
-    TypeOutOfRange { actual: u8, at: String },
+    TypeOutOfRange { 
+        /// The found type
+        found: u8, 
+        /// The name of the field being serialised/deserialised.
+        at: String,
+        /// The index in in the buffer/string where this error occurred.
+        /// This is none when serialising.
+        index: Option<usize>
+    },
     /// Found a type different from the type that was expected.
     #[error("expected tag of type {expected}, received {actual} at field `{at}`)")]
     UnexpectedType {
@@ -21,71 +29,107 @@ pub enum Error {
         expected: FieldType,
         /// Type that was found in the NBT stream.
         actual: FieldType,
-        /// The struct field that the error occurred at.
-        /// This is provided on a best-effort basis and may not always be accurate.
+        /// The name of the field being serialised/deserialised.
         at: String,
+        /// The index in in the buffer/string where this error occurred.
+        /// This is none when serialising.
+        index: Option<usize>
     },
-    /// Any errors related to reading and writing from the stream.
-    #[error("{0}")]
-    ByteError(#[from] StreamError),
-    #[error("unexpected end tag")]
-    UnexpectedEnd,
+    #[error("unexpected end tag found at `{at}`")]
+    UnexpectedEnd {
+        /// The name of the field being serialised/deserialised.
+        at: String,
+        /// The index in in the buffer/string where this error occurred.
+        /// This is none when serialising.
+        index: Option<usize>
+    },
     /// The requested operation is not supported.
     #[error("`{op}` at field `{at}`")]
     Unsupported {
         /// Description of the error
         op: &'static str,
-        /// The struct field that the error ocurred at.
+        /// The name of the field being serialised/deserialised.
         at: String,
+        /// The index in in the buffer/string where this error occurred.
+        /// This is none when serialising.
+        index: Option<usize>
     },
-    #[error("expected a valid number at `{0}`")]
-    ExpectedInteger(String),
+    #[error("expected a valid number at `{at}`")]
+    ExpectedInteger {
+        /// The name of the field being serialised/deserialised.
+        at: String,
+        /// The index in in the buffer/string where this error occurred.
+        /// This is none when serialising.
+        index: Option<usize>
+    },
     /// Integer is too large to fit in the given type
     #[error("integer `{value}` is too large for type {ty} at `{at}`")]
     IntegerTooLarge {
         value: String,
         ty: FieldType,
+        /// The name of the field being serialised/deserialised.
         at: String,
+        /// The index in in the buffer/string where this error occurred.
+        /// This is none when serialising.
+        index: Option<usize>
     },
     #[error("{0}")]
     Other(String),
-    // #[error("{0}")]
-    // Malformed(&'static str),
-    #[error("unexpected end of file at `{0}`")]
-    Eof(String),
+    #[error("unexpected end of file at `{at}`")]
+    Eof {
+        /// The name of the field being serialised/deserialised.
+        at: String,
+        /// The index in in the buffer/string where this error occurred.
+        /// This is none when serialising.
+        index: Option<usize>
+    },
     #[error("expected '{expected}', found '{found}', at `{at}`")]
     ExpectedSymbol {
         found: char,
         expected: char,
+        /// The name of the field being serialised/deserialised.
         at: String,
+        /// The index in in the buffer/string where this error occurred.
+        /// This is none when serialising.
+        index: Option<usize>
     },
     #[error("failed to parse int: \"{error}\" at `{at}`")]
     ParseIntError {
         error: std::num::ParseIntError,
+        /// The name of the field being serialised/deserialised.
         at: String,
+        /// The index in in the buffer/string where this error occurred.
+        /// This is none when serialising.
+        index: Option<usize>
     },
     #[error("failed to parse float: \"{error}\" at `{at}`")]
     ParseFloatError {
         error: std::num::ParseFloatError,
+        /// The name of the field being serialised/deserialised.
         at: String,
+        /// The index in in the buffer/string where this error occurred.
+        /// This is none when serialising.
+        index: Option<usize>
     },
 }
 
-impl From<std::io::Error> for Error {
-    fn from(value: std::io::Error) -> Self {
-        Self::ByteError(StreamError::IoError(value.to_string()))
-    }
-}
-
-impl From<std::str::Utf8Error> for Error {
-    fn from(value: std::str::Utf8Error) -> Self {
-        Self::ByteError(StreamError::Utf8Error(value))
-    }
-}
-
 impl From<std::string::FromUtf8Error> for Error {
-    fn from(value: std::string::FromUtf8Error) -> Self {
-        Self::ByteError(StreamError::FromUtf8Error(value))
+    fn from(value: std::string::FromUtf8Error) -> Error {
+        Error::Other(value.to_string())
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(value: std::io::Error) -> Error {
+        if value.kind() == std::io::ErrorKind::UnexpectedEof {
+            // TODO: How should I retrieve the current field name?
+            Error::Eof {
+                at: "unknown".to_string(),
+                index: None
+            }
+        } else {
+            Error::Other(value.to_string())
+        }
     }
 }
 
