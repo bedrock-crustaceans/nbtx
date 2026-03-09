@@ -25,7 +25,7 @@ impl<'re> Deserializer<'re> {
     }
 
     fn skip(&mut self, n: usize) -> Result<(), Error> {
-        if self.input.len() <= n {
+        if self.input.len() < n {
             return Err(Error::Eof {
                 at: self.curr_key
                     .take()
@@ -38,8 +38,10 @@ impl<'re> Deserializer<'re> {
         Ok(())
     }
 
+    /// Skips over all whitespace and newlines and returns the next character without advancing
+    /// the cursor.
     fn peek_char(&mut self) -> Result<char, Error> {
-        self.input.chars().next().ok_or(Error::Eof {
+        self.input.chars().filter(|&c| c != ' ' && c != '\n').next().ok_or(Error::Eof {
             at: self.curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
@@ -47,13 +49,24 @@ impl<'re> Deserializer<'re> {
         })
     }
 
+    /// Skips over all whitespace and newlines and returns the next character without advancing
+    /// the cursor. This function also returns the index of the character.
+    fn peek_char_with_index(&mut self) -> Result<(usize, char), Error> {
+        self.input.char_indices().filter(|(_, c)| *c != ' ' && *c != '\n').next().ok_or(Error::Eof {
+            at: self.curr_key
+                .take()
+                .unwrap_or_else(|| String::from("unknown")),
+            index: Some(self.current_index())
+        })
+    }
+
+    /// Returns the next non-whitespace character, advancing the cursor.
     fn next_char(&mut self) -> Result<char, Error> {
-        let ch = self.peek_char()?;
-        self.input = &self.input[ch.len_utf8()..];
+        let (idx, ch) = self.peek_char_with_index()?;
+        self.skip(idx + ch.len_utf8())?;
         Ok(ch)
     }
 
-    ///
     /// If `is_key` is set to true it will not require quotation marks.
     fn parse_string(&mut self) -> Result<&str, Error> {
         if self.peek_char()? == '"' {
