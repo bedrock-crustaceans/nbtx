@@ -574,12 +574,12 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
         self,
         _name: &'static str,
         _fields: &'static [&'static str],
-        _visitor: V,
+        visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        todo!()
+        self.deserialize_map(visitor)
     }
 
     fn deserialize_enum<V>(

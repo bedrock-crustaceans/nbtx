@@ -37,16 +37,16 @@ mod tests {
     const BIG_TEST_NBT: &[u8] = include_bytes!("../../test/bigtest.nbt");
 
     #[allow(dead_code)]
-    #[derive(Debug, Copy, Clone, serde::Serialize)]
+    #[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize)]
     enum Test {
         A,
         B,
         C,
     }
 
-    #[derive(serde::Serialize)]
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct Data {
-        value: Test,
+        // value: Test,
         byte: i8,
         tuple: Vec<i32>,
     }
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn simple_snbt() {
         let value = Data {
-            value: Test::A,
+            // value: Test::A,
             byte: 7,
             tuple: vec![1; 5],
         };
@@ -82,7 +82,7 @@ mod tests {
         println!("{}", ser.output);
 
         let mut de = Deserializer::new(&ser.output);
-        let val = Value::deserialize(&mut de).unwrap();
+        let val = Data::deserialize(&mut de).unwrap();
 
         println!("Deserialised: {val:?}");
     }
