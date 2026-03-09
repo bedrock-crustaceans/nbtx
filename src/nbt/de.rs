@@ -43,7 +43,8 @@ macro_rules! forward_unsupported {
     }
 }
 
-/// NBT deserializer.
+/// NBT deserializer. Rather than using this directly you should probably use one of the methods
+/// provided in the root, such as [`from_le_bytes`].
 #[derive(Debug)]
 pub struct Deserializer<'re, 'de, F, R>
 where
@@ -122,8 +123,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use nbtx as nbt;
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 ///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
 ///  struct Data {
 ///     value: String
@@ -132,12 +132,13 @@ where
 /// # let data = Data {
 /// #   value: String::from("Hello, World!")
 /// # };
-/// # let obuffer = nbt::to_le_bytes(&data).unwrap();
+/// # let obuffer = nbtx::to_le_bytes(&data)?;
 /// # let mut buffer: &[u8] = obuffer.as_ref();
 ///
-///  let data: Data = nbt::from_le_bytes(&mut buffer).unwrap();
+///  let data: Data = nbtx::from_le_bytes(&mut buffer)?;
 ///
 ///  println!("Got {data:?}!");
+/// # Ok(())
 /// # }
 /// ```
 pub fn from_le_bytes<'de, T, R>(reader: &mut R) -> Result<T, Error>
@@ -158,8 +159,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use nbtx as nbt;
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 ///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
 ///  struct Data {
 ///     value: String
@@ -168,12 +168,13 @@ where
 /// # let data = Data {
 /// #   value: String::from("Hello, World!")
 /// # };
-/// # let owned_buffer = nbt::to_be_bytes(&data).unwrap();
+/// # let owned_buffer = nbtx::to_be_bytes(&data)?;
 /// # let mut buffer = owned_buffer.as_slice();
 ///
-///  let data: Data = nbt::from_be_bytes(&mut buffer).unwrap();
+///  let data: Data = nbtx::from_be_bytes(&mut buffer)?;
 ///
 ///  println!("Got {data:?}!");
+/// # Ok(())
 /// # }
 /// ```
 pub fn from_be_bytes<'de, T, R>(reader: &mut R) -> Result<T, Error>
@@ -194,8 +195,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// # use nbtx as nbt;
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 ///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
 ///  struct Data {
 ///     value: String
@@ -204,12 +204,12 @@ where
 /// # let data = Data {
 /// #   value: String::from("Hello, World!")
 /// # };
-/// # let owned_buffer = nbt::to_net_bytes(&data).unwrap();
+/// # let owned_buffer = nbtx::to_net_bytes(&data)?;
 /// # let mut buffer = owned_buffer.as_slice();
 ///
-///  let data: Data = nbt::from_net_bytes(&mut buffer).unwrap();
-///
+///  let data: Data = nbtx::from_net_bytes(&mut buffer)?;
 ///  println!("Got {data:?}!");
+/// # Ok(())
 /// # }
 /// ```
 pub fn from_net_bytes<'data, T, R>(reader: &mut R) -> Result<T, Error>

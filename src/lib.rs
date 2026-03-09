@@ -17,7 +17,12 @@ mod test;
 
 mod error;
 mod nbt;
+
+// #[cfg(feature = "snbt")]
 pub mod snbt;
+// #[cfg(feature = "snbt")]
+pub use snbt::{de::from_string, ser::to_string};
+
 mod value;
 
 mod private {

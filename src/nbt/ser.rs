@@ -49,14 +49,15 @@ macro_rules! forward_unsupported_field {
 /// # Example
 ///
 /// ```rust
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
 ///     value: String
 ///  }
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbtx::to_bytes::<nbtx::BigEndian>(&data).unwrap();
+///  let encoded = nbtx::to_bytes::<nbtx::BigEndian>(&data)?;
+/// # Ok(())
 /// # }
 /// ```
 pub fn to_bytes<E>(v: &(impl Serialize + ?Sized)) -> Result<Vec<u8>, Error>
@@ -77,7 +78,7 @@ where
 ///
 /// ```rust
 /// # use std::io::Cursor;
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 /// #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
 ///     value: String
@@ -86,7 +87,8 @@ where
 ///  let data = Data { value: "Hello, World!".to_owned() };
 ///  let mut writer = Cursor::new(Vec::new());
 ///
-///  nbtx::to_bytes_in::<nbtx::BigEndian>(&mut writer, &data).unwrap();
+///  nbtx::to_bytes_in::<nbtx::BigEndian>(&mut writer, &data)?;
+/// # Ok(())
 /// # }
 /// ```
 pub fn to_bytes_in<E>(
@@ -112,14 +114,15 @@ where
 /// # Example
 ///
 /// ```rust
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 /// #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
 ///     value: String
 ///  }
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbtx::to_net_bytes(&data).unwrap();
+///  let encoded = nbtx::to_net_bytes(&data)?;
+/// # Ok(())
 /// # }
 /// ```
 #[inline]
@@ -140,7 +143,7 @@ where
 ///
 /// ```rust
 /// # use std::io::Cursor;
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
 ///     value: String
@@ -149,7 +152,8 @@ where
 ///  let data = Data { value: "Hello, World!".to_owned() };
 ///  let mut writer = Cursor::new(Vec::new());
 ///
-///  let encoded = nbtx::to_net_bytes_in(&mut writer, &data).unwrap();
+///  let encoded = nbtx::to_net_bytes_in(&mut writer, &data)?;
+/// # Ok(())
 /// # }
 /// ```
 #[inline]
@@ -171,14 +175,15 @@ where
 /// # Example
 ///
 /// ```rust
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 /// #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
 ///     value: String
 ///  }
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbtx::to_be_bytes(&data).unwrap();
+///  let encoded = nbtx::to_be_bytes(&data)?;
+/// # Ok(())
 /// # }
 /// ```
 #[inline]
@@ -199,7 +204,7 @@ where
 ///
 /// ```rust
 /// # use std::io::Cursor;
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
 ///     value: String
@@ -208,7 +213,8 @@ where
 ///  let data = Data { value: "Hello, World!".to_owned() };
 ///  let mut writer = Cursor::new(Vec::new());
 ///
-///  let encoded = nbtx::to_be_bytes_in(&mut writer, &data).unwrap();
+///  let encoded = nbtx::to_be_bytes_in(&mut writer, &data)?;
+/// # Ok(())
 /// # }
 /// ```
 #[inline]
@@ -230,14 +236,15 @@ where
 /// # Example
 ///
 /// ```rust
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 /// #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
 ///     value: String
 ///  }
 ///
 ///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbtx::to_le_bytes(&data).unwrap();
+///  let encoded = nbtx::to_le_bytes(&data)?;
+/// # Ok(())
 /// # }
 /// ```
 #[inline]
@@ -258,7 +265,7 @@ where
 ///
 /// ```rust
 /// # use std::io::Cursor;
-/// # fn main() {
+/// # fn main() -> Result<(), nbtx::Error> {
 ///  #[derive(serde::Serialize, serde::Deserialize)]
 ///  struct Data {
 ///     value: String
@@ -267,7 +274,8 @@ where
 ///  let data = Data { value: "Hello, World!".to_owned() };
 ///  let mut writer = Cursor::new(Vec::new());
 ///
-///  let encoded = nbtx::to_le_bytes_in(&mut writer, &data).unwrap();
+///  let encoded = nbtx::to_le_bytes_in(&mut writer, &data)?;
+/// # Ok(())
 /// # }
 /// ```
 #[inline]

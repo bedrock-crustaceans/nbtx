@@ -1,6 +1,33 @@
+use serde::Deserialize;
 use serde::de::{self, Visitor};
 
 use crate::{Error, FieldType};
+
+/// Reads a single object of type `T` from the given string in SNBT format.
+///
+/// # Example
+///
+/// ```rust
+/// # fn main() -> Result<(), nbtx::Error> {
+///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
+///  struct Data {
+///     value: String
+///  }
+///
+/// let data = Data {
+///    value: String::from("Hello, World!")
+/// };
+/// let out = nbtx::to_string(&data)?;
+/// let data: Data = nbtx::from_string(out)?;
+///
+/// println!("Got {data:?}!");
+/// # Ok(())
+/// # }
+/// ```
+pub fn from_string<'a, T: Deserialize<'a>, S: AsRef<str>>(input: S) -> Result<T, Error> {
+    let mut de = Deserializer::new(input.as_ref());
+    T::deserialize(&mut de)
+}
 
 #[derive(Debug)]
 pub struct Deserializer<'re> {

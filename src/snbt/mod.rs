@@ -3,8 +3,6 @@ pub mod ser;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use serde::{Deserialize, Serialize};
 
     use crate::{

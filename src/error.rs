@@ -1,9 +1,8 @@
-use std::borrow::Cow;
-
 use thiserror::Error;
 
 use crate::FieldType;
 
+/// Convenient type definition for `Result<T, nbtx::Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur while serializing or deserializing NBT data.
@@ -65,7 +64,9 @@ pub enum Error {
     /// Integer is too large to fit in the given type
     #[error("integer `{value}` is too large for type {ty} at `{at}`")]
     IntegerTooLarge {
+        /// The value that was read.
         value: String,
+        /// The type of integer that the deserialiser attempted to read.
         ty: FieldType,
         /// The name of the field being serialised/deserialised.
         at: String,
@@ -85,7 +86,9 @@ pub enum Error {
     },
     #[error("encountered unexpected symbol '{found}', at `{at}`")]
     ExpectedSymbol {
+        /// The symbol that was found.
         found: char,
+        /// The symbol that the deserialiser expected, or `None` if it had no specific expectations.
         expected: Option<char>,
         /// The name of the field being serialised/deserialised.
         at: String,
@@ -95,6 +98,7 @@ pub enum Error {
     },
     #[error("failed to parse int: \"{error}\" at `{at}`")]
     ParseIntError {
+        /// The parsing error itself.
         error: std::num::ParseIntError,
         /// The name of the field being serialised/deserialised.
         at: String,
@@ -104,6 +108,7 @@ pub enum Error {
     },
     #[error("failed to parse float: \"{error}\" at `{at}`")]
     ParseFloatError {
+        /// The parsing error itself.
         error: std::num::ParseFloatError,
         /// The name of the field being serialised/deserialised.
         at: String,
@@ -130,33 +135,5 @@ impl From<std::io::Error> for Error {
         } else {
             Error::Other(value.to_string())
         }
-    }
-}
-
-/// Errors related to binary reading and writing.
-#[derive(Debug, Clone, Error, PartialEq, Eq)]
-pub enum StreamError {
-    // TODO: std::io::Error does not implement Clone while the ProtoCodec error type requires it.
-    // This is why I convert the error to a string rather than storing it directly like the others.
-    /// An IO [`Error`](std::io::Error).
-    #[error("{0}")]
-    IoError(String),
-    /// A byte slice could not be converted into a `String` because it is invalid UTF-8.
-    #[error("{0}")]
-    FromUtf8Error(#[from] std::string::FromUtf8Error),
-    /// A byte slice could not be converted into a `str` because it is invalid UTF-8.
-    #[error("{0}")]
-    Utf8Error(#[from] std::str::Utf8Error),
-    /// The deserializer tried to read past the end of the buffer.
-    #[error("Expected {expected} remaining bytes, found only {remaining}")]
-    UnexpectedEof { expected: usize, remaining: usize },
-    /// Any errors that do not fit the previous categories.
-    #[error("{0}")]
-    Other(Cow<'static, str>),
-}
-
-impl From<std::io::Error> for StreamError {
-    fn from(value: std::io::Error) -> Self {
-        Self::IoError(value.to_string())
     }
 }

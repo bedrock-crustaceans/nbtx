@@ -19,6 +19,30 @@ macro_rules! forward_unsupported {
     }
 }
 
+/// Serializes the given data into SNBT format.
+///
+/// # Example
+///
+/// ```rust
+/// # fn main() -> Result<(), nbtx::Error> {
+///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
+///  struct Data {
+///     value: String
+///  }
+///
+///  let data = Data { value: "Hello, World!".to_owned() };
+///  let encoded = nbtx::to_string(&data)?;
+///  println!("Data in SNBT format is {data:?}");
+/// # Ok(())
+/// # }
+/// ```
+pub fn to_string<T: Serialize>(value: &T) -> Result<String, Error> {
+    let mut ser = Serializer::new();
+    value.serialize(&mut ser)?;
+    Ok(ser.into_inner())
+}
+
+/// An SNBT serialiser.
 #[derive(Default)]
 pub struct Serializer {
     curr_key: Option<String>,
@@ -27,12 +51,18 @@ pub struct Serializer {
 }
 
 impl Serializer {
+    /// Creates a new, empty serialiser.
     pub fn new() -> Serializer {
         Serializer {
             curr_key: None,
             is_key: false,
             output: String::new(),
         }
+    }
+
+    /// Consumes the serialiser and returns the output string.
+    pub fn into_inner(self) -> String {
+        self.output
     }
 }
 
