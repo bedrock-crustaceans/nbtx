@@ -21,7 +21,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nbtx = "1.0.0"
+nbtx = "2.0"
 ```
 and then start deserialising with `nbtx`. Or take a look at any of the other [`examples`](https://github.com/bedrock-crustaceans/nbtx/tree/master/examples)
 
