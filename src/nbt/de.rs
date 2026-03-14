@@ -6,20 +6,24 @@ use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, de};
 use varint_rs::VarintReader;
 
+use crate::error::{UnexpectedEnd, UnexpectedEof, UnexpectedType, Unsupported};
 use crate::{EndiannessImpl, Error, FieldType, NetworkLittleEndian, Variant};
 
 /// Verifies that the deserialized type is equal to the expected type.
 macro_rules! is_ty {
     ($expected: ident, $field_name: expr, $actual: expr) => {
         if $actual != FieldType::$expected {
-            return Err(Error::UnexpectedType {
+            return Err(Error::UnexpectedType(UnexpectedType {
                 expected: FieldType::$expected,
                 actual: $actual,
+
+                #[cfg(feature = "error-context")]
                 at: $field_name
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: None,
-            });
+            }));
         }
     };
 }
@@ -33,11 +37,13 @@ macro_rules! forward_unsupported {
             where
                 V: Visitor<'de>
             {
-                Err(Error::Unsupported {
+                Err(Error::Unsupported(Unsupported {
                     op: concat!("deserialization of `", stringify!($ty), "` is not supported"),
+                    #[cfg(feature = "error-context")]
                     at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")),
+                    #[cfg(feature = "error-context")]
                     index: None
-                })
+                }))
             }
         )+}
     }
@@ -54,6 +60,7 @@ where
     input: &'re mut R,
     next_ty: FieldType,
     is_key: bool,
+    #[cfg(feature = "error-context")]
     curr_key: Option<String>,
     _marker: PhantomData<&'de F>,
 }
@@ -65,20 +72,29 @@ where
 {
     /// Creates a new deserializer, consuming the reader.
     pub fn new(input: &'re mut R) -> Result<Self, Error> {
-        let next_ty = FieldType::try_from(input.read_u8()?, &mut None, Some(0))?;
+        let next_ty = FieldType::try_from(
+            input.read_u8()?, 
+            #[cfg(feature = "error-context")]
+            &mut None, 
+            #[cfg(feature = "error-context")]
+            Some(0)
+        )?;
         if next_ty != FieldType::Compound {
-            return Err(Error::UnexpectedType {
+            return Err(Error::UnexpectedType(UnexpectedType {
                 actual: next_ty,
                 expected: FieldType::Compound,
+                #[cfg(feature = "error-context")]
                 at: String::from("root"),
+                #[cfg(feature = "error-context")]
                 index: Some(0),
-            });
+            }));
         }
 
         let de = Deserializer {
             input,
             next_ty,
             is_key: false,
+            #[cfg(feature = "error-context")]
             curr_key: None,
             _marker: PhantomData,
         };
@@ -237,13 +253,15 @@ where
             self.deserialize_string(visitor)
         } else {
             match self.next_ty {
-                FieldType::End => Err(Error::UnexpectedEnd {
+                FieldType::End => Err(Error::UnexpectedEnd(UnexpectedEnd {
+                    #[cfg(feature = "error-context")]
                     at: self
                         .curr_key
                         .take()
                         .unwrap_or_else(|| String::from("unknown")),
+                    #[cfg(feature = "error-context")]
                     index: None,
-                }),
+                })),
                 FieldType::Byte => self.deserialize_i8(visitor),
                 FieldType::Short => self.deserialize_i16(visitor),
                 FieldType::Int => self.deserialize_i32(visitor),
@@ -356,14 +374,16 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "deserializing string references is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]                
             index: None,
-        })
+        }))
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Error>
@@ -382,6 +402,8 @@ where
         self.input.read_exact(&mut buf)?;
 
         let string = String::from_utf8(buf)?;
+
+        #[cfg(feature = "error-context")]
         if self.is_key {
             self.curr_key = Some(string.clone());
         }
@@ -393,14 +415,16 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "deserializing byte slices is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]
             index: None,
-        })
+        }))
 
         // is_ty!(ByteArray, self.field_name, self.next_ty);
 
@@ -450,28 +474,32 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "deserializing unit values is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]                
             index: None,
-        })
+        }))
     }
 
     fn deserialize_unit_struct<V>(self, _name: &'static str, _visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "deserializing unit structs is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]                
             index: None,
-        })
+        }))
     }
 
     fn deserialize_newtype_struct<V>(
@@ -482,14 +510,16 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "deserializing newtype structs is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]                
             index: None,
-        })
+        }))
     }
 
     fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Error>
@@ -507,7 +537,13 @@ where
             FieldType::ByteArray => FieldType::Byte,
             FieldType::IntArray => FieldType::Int,
             FieldType::LongArray => FieldType::Long,
-            _ => FieldType::try_from(self.input.read_u8()?, &mut self.curr_key, None)?,
+            _ => FieldType::try_from(
+                self.input.read_u8()?, 
+                #[cfg(feature = "error-context")]
+                &mut self.curr_key, 
+                #[cfg(feature = "error-context")]
+                None
+            )?,
         };
 
         let de = SeqDeserializer::new(self, ty, len as u32)?;
@@ -523,14 +559,16 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "deserializing tuple structs is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]                
             index: None,
-        })
+        }))
     }
 
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Error>
@@ -564,14 +602,16 @@ where
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "deserializing enums is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]                  
             index: None,
-        })
+        }))
     }
 
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Error>
@@ -630,13 +670,15 @@ where
         };
 
         if expected_len != 0 && expected_len != remaining {
-            return Err(Error::Eof {
+            return Err(Error::UnexpectedEof(UnexpectedEof {
+                #[cfg(feature = "error-context")]
                 at: de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: None,
-            });
+            }));
         }
 
         Ok(Self { de, ty, remaining })
@@ -701,7 +743,13 @@ where
         self.de.is_key = true;
         self.de.next_ty = FieldType::String;
 
-        let next_ty = FieldType::try_from(self.de.input.read_u8()?, &mut self.de.curr_key, None)?;
+        let next_ty = FieldType::try_from(
+            self.de.input.read_u8()?, 
+            #[cfg(feature = "error-context")]
+            &mut self.de.curr_key, 
+            #[cfg(feature = "error-context")]
+            None
+        )?;
 
         let r = if next_ty == FieldType::End {
             Ok(None)
