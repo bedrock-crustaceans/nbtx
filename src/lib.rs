@@ -1,5 +1,13 @@
 //! Implements NBT serialisation and deserialization for three different integer encodings.
 
+#![warn(clippy::pedantic)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_lossless)]
+#![allow(clippy::enum_glob_use)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::missing_errors_doc)]
+
 use crate::error::TypeOutOfRange;
 pub use crate::nbt::de::{Deserializer, from_be_bytes, from_bytes, from_le_bytes, from_net_bytes};
 pub use crate::nbt::ser::{

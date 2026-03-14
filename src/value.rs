@@ -44,6 +44,7 @@ pub enum Value {
 
 impl Value {
     #[inline]
+    #[must_use]
     pub fn discriminant(&self) -> u8 {
         match self {
             Self::Byte(_) => 1,

@@ -268,12 +268,12 @@ where
                 FieldType::Long => self.deserialize_i64(visitor),
                 FieldType::Float => self.deserialize_f32(visitor),
                 FieldType::Double => self.deserialize_f64(visitor),
-                FieldType::ByteArray => self.deserialize_seq(visitor),
                 FieldType::String => self.deserialize_string(visitor),
-                FieldType::List => self.deserialize_seq(visitor),
                 FieldType::Compound => self.deserialize_map(visitor),
-                FieldType::IntArray => self.deserialize_seq(visitor),
-                FieldType::LongArray => self.deserialize_seq(visitor),
+                FieldType::List
+                | FieldType::ByteArray
+                | FieldType::IntArray
+                | FieldType::LongArray => self.deserialize_seq(visitor),
             }
         }
     }
@@ -449,9 +449,9 @@ where
         is_ty!(ByteArray, self.curr_key, self.next_ty);
 
         let len = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_i32::<BigEndian>()? as u32,
-            Variant::LittleEndian => self.input.read_i32::<LittleEndian>()? as u32,
-            Variant::NetworkEndian => self.input.read_i32_varint()? as u32,
+            Variant::BigEndian => self.input.read_i32::<BigEndian>()?.cast_unsigned(),
+            Variant::LittleEndian => self.input.read_i32::<LittleEndian>()?.cast_unsigned(),
+            Variant::NetworkEndian => self.input.read_i32_varint()?.cast_unsigned(),
         };
 
         let mut buf = vec![0; len as usize];
@@ -664,9 +664,9 @@ where
 
         de.next_ty = ty;
         let remaining = match F::AS_ENUM {
-            Variant::BigEndian => de.input.read_i32::<BigEndian>()? as u32,
-            Variant::LittleEndian => de.input.read_i32::<LittleEndian>()? as u32,
-            Variant::NetworkEndian => de.input.read_i32_varint()? as u32,
+            Variant::BigEndian => de.input.read_i32::<BigEndian>()?.cast_unsigned(),
+            Variant::LittleEndian => de.input.read_i32::<LittleEndian>()?.cast_unsigned(),
+            Variant::NetworkEndian => de.input.read_i32_varint()?.cast_unsigned(),
         };
 
         if expected_len != 0 && expected_len != remaining {

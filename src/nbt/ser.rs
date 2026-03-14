@@ -37,7 +37,6 @@ macro_rules! forward_unsupported {
 macro_rules! forward_unsupported_field {
     ($($ty: ident),+) => {
         paste! {$(
-
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<bool, Error> {
                 Err(Error::Unsupported(Unsupported {
                     op: concat!("serialization of `", stringify!($ty), "` is not supported"),
@@ -135,7 +134,6 @@ where
 /// # Ok(())
 /// # }
 /// ```
-
 pub fn to_net_bytes<T>(v: &T) -> Result<Vec<u8>, Error>
 where
     T: ?Sized + Serialize,
@@ -166,7 +164,6 @@ where
 /// # Ok(())
 /// # }
 /// ```
-
 pub fn to_net_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), Error>
 where
     W: WriteBytesExt,
@@ -196,7 +193,6 @@ where
 /// # Ok(())
 /// # }
 /// ```
-
 pub fn to_be_bytes<T>(v: &T) -> Result<Vec<u8>, Error>
 where
     T: ?Sized + Serialize,
@@ -227,7 +223,6 @@ where
 /// # Ok(())
 /// # }
 /// ```
-
 pub fn to_be_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), Error>
 where
     W: WriteBytesExt,
@@ -257,7 +252,6 @@ where
 /// # Ok(())
 /// # }
 /// ```
-
 pub fn to_le_bytes<T>(v: &T) -> Result<Vec<u8>, Error>
 where
     T: ?Sized + Serialize,
@@ -288,7 +282,6 @@ where
 /// # Ok(())
 /// # }
 /// ```
-
 pub fn to_le_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), Error>
 where
     W: WriteBytesExt,
@@ -322,7 +315,7 @@ where
     E: EndiannessImpl,
 {
     /// Creates a new and empty serializer.
-
+    #[must_use]
     pub const fn new(w: W) -> Serializer<W, E> {
         Serializer {
             writer: w,
@@ -372,9 +365,9 @@ where
         match E::AS_ENUM {
             Variant::BigEndian => self.writer.write_i16::<BigEndian>(v)?,
             Variant::LittleEndian | Variant::NetworkEndian => {
-                self.writer.write_i16::<LittleEndian>(v)?
+                self.writer.write_i16::<LittleEndian>(v)?;
             }
-        };
+        }
 
         Ok(())
     }
@@ -384,7 +377,7 @@ where
             Variant::BigEndian => self.writer.write_i32::<BigEndian>(v)?,
             Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(v)?,
             Variant::NetworkEndian => self.writer.write_i32_varint(v)?,
-        };
+        }
 
         Ok(())
     }
@@ -394,7 +387,7 @@ where
             Variant::BigEndian => self.writer.write_i64::<BigEndian>(v)?,
             Variant::LittleEndian => self.writer.write_i64::<LittleEndian>(v)?,
             Variant::NetworkEndian => self.writer.write_i64_varint(v)?,
-        };
+        }
 
         Ok(())
     }
@@ -403,9 +396,9 @@ where
         match E::AS_ENUM {
             Variant::BigEndian => self.writer.write_f32::<BigEndian>(v)?,
             Variant::LittleEndian | Variant::NetworkEndian => {
-                self.writer.write_f32::<LittleEndian>(v)?
+                self.writer.write_f32::<LittleEndian>(v)?;
             }
-        };
+        }
 
         Ok(())
     }
@@ -414,9 +407,9 @@ where
         match E::AS_ENUM {
             Variant::BigEndian => self.writer.write_f64::<BigEndian>(v)?,
             Variant::LittleEndian | Variant::NetworkEndian => {
-                self.writer.write_f64::<LittleEndian>(v)?
+                self.writer.write_f64::<LittleEndian>(v)?;
             }
-        };
+        }
 
         Ok(())
     }
@@ -691,7 +684,9 @@ where
         let ty_serializer = FieldTypeSerializer::new(self);
         let should_skip = value.serialize(ty_serializer)?;
 
-        if !should_skip {
+        if should_skip {
+            Ok(())
+        } else {
             match M::AS_ENUM {
                 Variant::LittleEndian => self.writer.write_u16::<LittleEndian>(key.len() as u16),
                 Variant::BigEndian => self.writer.write_u16::<BigEndian>(key.len() as u16),
@@ -700,8 +695,6 @@ where
 
             self.writer.write_all(key.as_bytes())?;
             value.serialize(&mut **self)
-        } else {
-            Ok(())
         }
     }
 
