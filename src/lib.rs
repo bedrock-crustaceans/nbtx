@@ -1,5 +1,14 @@
 //! Implements NBT serialisation and deserialization for three different integer encodings.
 
+#![warn(clippy::pedantic)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_lossless)]
+#![allow(clippy::enum_glob_use)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::missing_errors_doc)]
+
+use crate::error::TypeOutOfRange;
 pub use crate::nbt::de::{Deserializer, from_be_bytes, from_bytes, from_le_bytes, from_net_bytes};
 pub use crate::nbt::ser::{
     Serializer, to_be_bytes, to_be_bytes_in, to_bytes, to_bytes_in, to_le_bytes, to_le_bytes_in,
@@ -142,16 +151,19 @@ impl Display for FieldType {
 impl FieldType {
     pub(crate) fn try_from(
         v: u8,
-        at: &mut Option<String>,
-        at_index: Option<usize>,
+        #[cfg(feature = "error-context")] at: &mut Option<String>,
+        #[cfg(feature = "error-context")] at_index: Option<usize>,
     ) -> Result<Self> {
         const LAST_DISC: u8 = FieldType::LongArray as u8;
         if v > LAST_DISC {
-            return Err(Error::TypeOutOfRange {
+            return Err(Error::TypeOutOfRange(TypeOutOfRange {
                 found: v,
+
+                #[cfg(feature = "error-context")]
                 at: at.take().unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: at_index,
-            });
+            }));
         }
 
         // SAFETY: Because `Self` is marked as `repr(u8)`, its layout is guaranteed to start
