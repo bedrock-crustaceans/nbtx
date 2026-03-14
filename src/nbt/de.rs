@@ -73,11 +73,11 @@ where
     /// Creates a new deserializer, consuming the reader.
     pub fn new(input: &'re mut R) -> Result<Self, Error> {
         let next_ty = FieldType::try_from(
-            input.read_u8()?, 
+            input.read_u8()?,
             #[cfg(feature = "error-context")]
-            &mut None, 
+            &mut None,
             #[cfg(feature = "error-context")]
-            Some(0)
+            Some(0),
         )?;
         if next_ty != FieldType::Compound {
             return Err(Error::UnexpectedType(UnexpectedType {
@@ -381,7 +381,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]                
+            #[cfg(feature = "error-context")]
             index: None,
         }))
     }
@@ -481,7 +481,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]                
+            #[cfg(feature = "error-context")]
             index: None,
         }))
     }
@@ -497,7 +497,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]                
+            #[cfg(feature = "error-context")]
             index: None,
         }))
     }
@@ -517,7 +517,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]                
+            #[cfg(feature = "error-context")]
             index: None,
         }))
     }
@@ -538,11 +538,11 @@ where
             FieldType::IntArray => FieldType::Int,
             FieldType::LongArray => FieldType::Long,
             _ => FieldType::try_from(
-                self.input.read_u8()?, 
+                self.input.read_u8()?,
                 #[cfg(feature = "error-context")]
-                &mut self.curr_key, 
+                &mut self.curr_key,
                 #[cfg(feature = "error-context")]
-                None
+                None,
             )?,
         };
 
@@ -566,7 +566,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]                
+            #[cfg(feature = "error-context")]
             index: None,
         }))
     }
@@ -609,7 +609,7 @@ where
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]                  
+            #[cfg(feature = "error-context")]
             index: None,
         }))
     }
@@ -744,11 +744,11 @@ where
         self.de.next_ty = FieldType::String;
 
         let next_ty = FieldType::try_from(
-            self.de.input.read_u8()?, 
+            self.de.input.read_u8()?,
             #[cfg(feature = "error-context")]
-            &mut self.de.curr_key, 
+            &mut self.de.curr_key,
             #[cfg(feature = "error-context")]
-            None
+            None,
         )?;
 
         let r = if next_ty == FieldType::End {

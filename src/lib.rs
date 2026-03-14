@@ -143,10 +143,8 @@ impl Display for FieldType {
 impl FieldType {
     pub(crate) fn try_from(
         v: u8,
-        #[cfg(feature = "error-context")]
-        at: &mut Option<String>,
-        #[cfg(feature = "error-context")]
-        at_index: Option<usize>,
+        #[cfg(feature = "error-context")] at: &mut Option<String>,
+        #[cfg(feature = "error-context")] at_index: Option<usize>,
     ) -> Result<Self> {
         const LAST_DISC: u8 = FieldType::LongArray as u8;
         if v > LAST_DISC {

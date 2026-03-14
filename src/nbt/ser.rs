@@ -7,7 +7,7 @@ use serde::{Serialize, ser};
 
 use varint_rs::VarintWriter;
 
-use crate::error::{Unsupported};
+use crate::error::Unsupported;
 use crate::{EndiannessImpl, Error, FieldType, NetworkLittleEndian, Variant};
 
 macro_rules! unsupported {
@@ -15,13 +15,11 @@ macro_rules! unsupported {
         Err(Error::Unsupported(Unsupported {
             op: $msg,
             #[cfg(feature = "error-context")]
-            at: $key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]                
-            index: None
+            at: $key.take().unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]
+            index: None,
         }))
-    }
+    };
 }
 
 /// Returns a `not supported` error.
@@ -485,7 +483,10 @@ where
         _variant: &'static str,
         _value: &T,
     ) -> Result<(), Error> {
-        unsupported!("serializing newtype variants is not supported", self.curr_key)
+        unsupported!(
+            "serializing newtype variants is not supported",
+            self.curr_key
+        )
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
@@ -493,7 +494,10 @@ where
             self.len = len;
             Ok(self)
         } else {
-            unsupported!("serializing dynamically sized sequences are not supported", self.curr_key)
+            unsupported!(
+                "serializing dynamically sized sequences are not supported",
+                self.curr_key
+            )
         }
     }
 
@@ -553,7 +557,10 @@ where
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        unsupported!("serializing struct variants is not supported", self.curr_key)
+        unsupported!(
+            "serializing struct variants is not supported",
+            self.curr_key
+        )
     }
 }
 
@@ -634,7 +641,10 @@ where
     where
         K: ?Sized + Serialize,
     {
-        unsupported!("`Serializer::serialize_key` is not supported, use `Serialize::serialize_entry instead`", self.curr_key)
+        unsupported!(
+            "`Serializer::serialize_key` is not supported, use `Serialize::serialize_entry instead`",
+            self.curr_key
+        )
     }
 
     /// Use `serialize_entry` instead.
@@ -642,7 +652,10 @@ where
     where
         V: ?Sized + Serialize,
     {
-        unsupported!("`Serializer::serialize_value` is not supported", self.curr_key)
+        unsupported!(
+            "`Serializer::serialize_value` is not supported",
+            self.curr_key
+        )
     }
 
     fn serialize_entry<K, V>(&mut self, key: &K, value: &V) -> Result<(), Error>
@@ -814,7 +827,10 @@ where
         _name: &'static str,
         _value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        unsupported!("serializing newtype structs is not supported", self.curr_key)
+        unsupported!(
+            "serializing newtype structs is not supported",
+            self.curr_key
+        )
     }
 
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
@@ -824,7 +840,10 @@ where
         _variant: &'static str,
         _value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        unsupported!("serializing newtype variants is not supported", self.curr_key)
+        unsupported!(
+            "serializing newtype variants is not supported",
+            self.curr_key
+        )
     }
 
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
@@ -876,7 +895,10 @@ where
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        unsupported!("serializing struct variants is not supported", self.curr_key)
+        unsupported!(
+            "serializing struct variants is not supported",
+            self.curr_key
+        )
     }
 }
 

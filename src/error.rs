@@ -5,19 +5,18 @@ use crate::FieldType;
 /// Convenient type definition for `Result<T, nbtx::Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The type tag was out of range.
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
-        feature = "error-context",
-        error(
-            "unknown tag type was encountered `{found:#0x}` at `{at}`, it should be in the range 0-12"
-        )
-    )]
-    #[cfg_attr(
-        not(feature = "error-context"),
-        error(
-            "unknown tag type was encountered `{found:#0x}`, should be in the range 0-12",
-        )
-    )]
+    feature = "error-context",
+    error(
+        "unknown tag type was encountered `{found:#0x}` at `{at}`, it should be in the range 0-12"
+    )
+)]
+#[cfg_attr(
+    not(feature = "error-context"),
+    error("unknown tag type was encountered `{found:#0x}`, should be in the range 0-12",)
+)]
 pub struct TypeOutOfRange {
     /// The found type
     pub(crate) found: u8,
@@ -52,6 +51,7 @@ impl TypeOutOfRange {
     }
 }
 
+/// The deserializer found a tag type that was unexpected.
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
     feature = "error-context",
@@ -103,15 +103,12 @@ impl UnexpectedType {
     }
 }
 
+/// The deserializer found an [`End`] tag that was unexpected.
+///
+/// [`End`]: crate::FieldType::End
 #[derive(Error, Debug, Clone)]
-#[cfg_attr(
-    feature = "error-context",
-    error("unexpected end tag found at `{at}`")
-)]
-#[cfg_attr(
-    not(feature = "error-context"),
-    error("unexpected end tag found")
-)]
+#[cfg_attr(feature = "error-context", error("unexpected end tag found at `{at}`"))]
+#[cfg_attr(not(feature = "error-context"), error("unexpected end tag found"))]
 pub struct UnexpectedEnd {
     /// The name of the field being serialised/deserialised.
     #[cfg(feature = "error-context")]
@@ -119,7 +116,7 @@ pub struct UnexpectedEnd {
     /// The index in in the buffer/string where this error occurred.
     /// This is none when serialising.
     #[cfg(feature = "error-context")]
-    pub(crate) index: Option<usize>
+    pub(crate) index: Option<usize>,
 }
 
 impl UnexpectedEnd {
@@ -138,15 +135,10 @@ impl UnexpectedEnd {
     }
 }
 
+/// The attempted operation is unsupported.
 #[derive(Error, Debug, Clone)]
-#[cfg_attr(
-    feature = "error-context",
-    error("`{op}`, at field `{at}`")
-)]
-#[cfg_attr(
-    not(feature = "error-context"),
-    error("`{op}`")
-)]
+#[cfg_attr(feature = "error-context", error("`{op}`, at field `{at}`"))]
+#[cfg_attr(not(feature = "error-context"), error("`{op}`"))]
 pub struct Unsupported {
     /// Description of the error
     pub(crate) op: &'static str,
@@ -156,7 +148,7 @@ pub struct Unsupported {
     /// The index in in the buffer/string where this error occurred.
     /// This is none when serialising.
     #[cfg(feature = "error-context")]
-    pub(crate) index: Option<usize>
+    pub(crate) index: Option<usize>,
 }
 
 impl Unsupported {
@@ -181,15 +173,10 @@ impl Unsupported {
     }
 }
 
+/// The deserializer expected a number but did not find it.
 #[derive(Error, Debug, Clone)]
-#[cfg_attr(
-    feature = "error-context",
-    error("expected a valid number at `{at}`")
-)]
-#[cfg_attr(
-    not(feature = "error-context"),
-    error("expected a valid number")
-)]
+#[cfg_attr(feature = "error-context", error("expected a valid number at `{at}`"))]
+#[cfg_attr(not(feature = "error-context"), error("expected a valid number"))]
 pub struct ExpectedNumber {
     /// The name of the field being serialised/deserialised.
     #[cfg(feature = "error-context")]
@@ -197,7 +184,7 @@ pub struct ExpectedNumber {
     /// The index in in the buffer/string where this error occurred.
     /// This is none when serialising.
     #[cfg(feature = "error-context")]
-    pub(crate) index: Option<usize>
+    pub(crate) index: Option<usize>,
 }
 
 impl ExpectedNumber {
@@ -216,6 +203,7 @@ impl ExpectedNumber {
     }
 }
 
+/// The integer that the deserializer tried to parse was too large for its type.
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
     feature = "error-context",
@@ -267,15 +255,10 @@ impl IntegerTooLarge {
     }
 }
 
+/// The input unexpectedly ended.
 #[derive(Error, Debug, Clone)]
-#[cfg_attr(
-    feature = "error-context",
-    error("unexpected end of file at `{at}`")
-)]
-#[cfg_attr(
-    not(feature = "error-context"),
-    error("unexpected end of file")
-)]
+#[cfg_attr(feature = "error-context", error("unexpected end of file at `{at}`"))]
+#[cfg_attr(not(feature = "error-context"), error("unexpected end of file"))]
 pub struct UnexpectedEof {
     /// The name of the field being serialised/deserialised.
     #[cfg(feature = "error-context")]
@@ -302,6 +285,7 @@ impl UnexpectedEof {
     }
 }
 
+/// An unexpected symbol was encountered by the deserializer.
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
     feature = "error-context",
@@ -468,7 +452,7 @@ pub enum Error {
     #[error(transparent)]
     ParseIntError(ParseIntError),
     #[error(transparent)]
-    ParseFloatError(ParseFloatError)
+    ParseFloatError(ParseFloatError),
 }
 
 impl From<std::string::FromUtf8Error> for Error {
