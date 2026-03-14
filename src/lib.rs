@@ -7,7 +7,6 @@
 #![allow(clippy::enum_glob_use)]
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::missing_errors_doc)]
-
 // Ensures that docs.rs builds all features and displays which feature flags to use for the types.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
