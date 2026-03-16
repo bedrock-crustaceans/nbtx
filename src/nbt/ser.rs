@@ -803,7 +803,10 @@ where
     }
 
     fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
-        unsupported!("serializing unit structs is not supported", self.ser.curr_key)
+        unsupported!(
+            "serializing unit structs is not supported",
+            self.ser.curr_key
+        )
     }
 
     fn serialize_unit_variant(
@@ -812,7 +815,10 @@ where
         _variant_index: u32,
         _variant: &'static str,
     ) -> Result<Self::Ok, Self::Error> {
-        unsupported!("serializing unit variants is not supported", self.ser.curr_key)
+        unsupported!(
+            "serializing unit variants is not supported",
+            self.ser.curr_key
+        )
     }
 
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
@@ -854,7 +860,10 @@ where
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        unsupported!("serializing tuple structs is not supported", self.ser.curr_key)
+        unsupported!(
+            "serializing tuple structs is not supported",
+            self.ser.curr_key
+        )
     }
 
     fn serialize_tuple_variant(
@@ -864,7 +873,10 @@ where
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        unsupported!("serializing tuple variants is not supported", self.ser.curr_key)
+        unsupported!(
+            "serializing tuple variants is not supported",
+            self.ser.curr_key
+        )
     }
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
