@@ -4,7 +4,13 @@ use std::hash::{Hash, Hasher};
 
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+mod de;
+
+pub use de::*;
+
+use crate::FieldType;
 
 /// General NBT value type that can represent any value.
 ///
@@ -42,24 +48,51 @@ pub enum Value {
     LongArray(Vec<i64>),
 }
 
+macro_rules! impl_disc {
+    ($expr:expr, $($ty:ident => $num:literal),*) => {
+        match $expr {
+            $(
+                Self::$ty(_) => $num
+            ),*
+        }
+    }
+}
+
+macro_rules! impl_field_ty {
+    ($expr:expr, $($ty:ident),*) => {
+        match $expr {
+            $(
+                Self::$ty(_) => FieldType::$ty
+            ),*
+        }
+    }
+}
+
 impl Value {
     #[inline]
-    #[must_use]
-    pub fn discriminant(&self) -> u8 {
-        match self {
-            Self::Byte(_) => 1,
-            Self::Short(_) => 2,
-            Self::Int(_) => 3,
-            Self::Long(_) => 4,
-            Self::Float(_) => 5,
-            Self::Double(_) => 6,
-            Self::ByteArray(_) => 7,
-            Self::String(_) => 8,
-            Self::List(_) => 9,
-            Self::Compound(_) => 10,
-            Self::IntArray(_) => 11,
-            Self::LongArray(_) => 12,
-        }
+    pub fn as_discriminant(&self) -> u8 {
+        impl_disc!(
+            self,
+            Byte => 1,
+            Short => 2,
+            Int => 3,
+            Long => 4,
+            Float => 5,
+            Double => 6,
+            ByteArray => 7,
+            String => 8,
+            List => 9,
+            Compound => 10,
+            IntArray => 11,
+            LongArray => 12
+        )
+    }
+
+    pub fn as_ty(&self) -> FieldType {
+        impl_field_ty!(
+            self, Byte, Short, Int, Long, Float, Double, ByteArray, String, List, Compound,
+            IntArray, LongArray
+        )
     }
 }
 
@@ -499,7 +532,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     #[inline]
     fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
     where
-        E: de::Error,
+        E: serde::de::Error,
     {
         Ok(Value::Byte(v as i8))
     }
@@ -507,7 +540,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     #[inline]
     fn visit_i8<E>(self, v: i8) -> Result<Self::Value, E>
     where
-        E: de::Error,
+        E: serde::de::Error,
     {
         Ok(Value::Byte(v))
     }
@@ -515,7 +548,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     #[inline]
     fn visit_i16<E>(self, v: i16) -> Result<Self::Value, E>
     where
-        E: de::Error,
+        E: serde::de::Error,
     {
         Ok(Value::Short(v))
     }
@@ -523,7 +556,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     #[inline]
     fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
     where
-        E: de::Error,
+        E: serde::de::Error,
     {
         Ok(Value::Int(v))
     }
@@ -531,7 +564,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     #[inline]
     fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
     where
-        E: de::Error,
+        E: serde::de::Error,
     {
         Ok(Value::Long(v))
     }
@@ -539,7 +572,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     #[inline]
     fn visit_f32<E>(self, v: f32) -> Result<Self::Value, E>
     where
-        E: de::Error,
+        E: serde::de::Error,
     {
         Ok(Value::Float(v))
     }
@@ -547,7 +580,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     #[inline]
     fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
     where
-        E: de::Error,
+        E: serde::de::Error,
     {
         Ok(Value::Double(v))
     }
@@ -555,7 +588,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     #[inline]
     fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
     where
-        E: de::Error,
+        E: serde::de::Error,
     {
         Ok(Value::String(v.to_owned()))
     }
@@ -563,7 +596,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     #[inline]
     fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
     where
-        E: de::Error,
+        E: serde::de::Error,
     {
         Ok(Value::String(v))
     }
@@ -571,7 +604,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     #[inline]
     fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
     where
-        E: de::Error,
+        E: serde::de::Error,
     {
         Ok(Value::ByteArray(v))
     }
