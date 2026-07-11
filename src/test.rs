@@ -8,7 +8,8 @@ use byteorder::BigEndian;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Error, NbtString, NetworkLittleEndian, Value, from_be_bytes, from_le_bytes, from_net_bytes,
+    Error, NbtByteArray, NbtString, NetworkLittleEndian, Value, from_be_bytes, from_le_bytes,
+    from_net_bytes,
     nbt::ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes},
 };
 
@@ -382,6 +383,115 @@ fn value_non_utf8_roundtrip() {
             assert_eq!(
                 compound.get(&raw_key).unwrap().as_string().unwrap(),
                 &raw_value
+            );
+        }};
+    }
+
+    check!(to_be_bytes, from_be_bytes);
+    check!(to_le_bytes, from_le_bytes);
+    check!(to_net_bytes, from_net_bytes);
+}
+
+/// A [`Value`] containing a `ByteArray` (including empty and 0xFF-style bytes)
+/// alongside a `String` and a `List` must round-trip losslessly and re-encode
+/// byte-for-byte for every endianness, with no cross-contamination between the
+/// three byte-shaped tags.
+#[test]
+fn value_byte_array_roundtrip() {
+    // Values around 0x00, 0x7f/0x80 and 0xff exercise the boundaries of the
+    // signed-byte range.
+    let bytes: Vec<u8> = vec![0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff];
+
+    let value = Value::Compound(BTreeMap::from([
+        ("empty".into(), Value::ByteArray(Vec::new())),
+        ("bytes".into(), Value::ByteArray(bytes.clone())),
+        ("string".into(), Value::String("Hello, World!".into())),
+        (
+            "list".into(),
+            Value::List(vec![Value::Byte(1), Value::Byte(2), Value::Byte(3)]),
+        ),
+    ]));
+
+    macro_rules! check {
+        ($to:ident, $from:ident) => {{
+            let encoded = $to(&value).unwrap();
+
+            let back: Value = $from(&mut encoded.as_slice()).unwrap();
+            assert_eq!(back, value);
+
+            // Byte-identical re-encode.
+            let re_encoded = $to(&back).unwrap();
+            assert_eq!(re_encoded, encoded);
+
+            let compound = back.as_compound().unwrap();
+
+            // The byte array survived as a `ByteArray`, not a `List` or a `String`.
+            let decoded_bytes = compound.get(&BString::from("bytes")).unwrap();
+            assert!(decoded_bytes.is_byte_array());
+            assert_eq!(
+                decoded_bytes.as_byte_array().unwrap().as_slice(),
+                &bytes[..]
+            );
+
+            assert!(
+                compound
+                    .get(&BString::from("empty"))
+                    .unwrap()
+                    .is_byte_array()
+            );
+            assert!(
+                compound
+                    .get(&BString::from("empty"))
+                    .unwrap()
+                    .as_byte_array()
+                    .unwrap()
+                    .is_empty()
+            );
+
+            // The string is still a `String`, and the list is still a `List`.
+            assert!(compound.get(&BString::from("string")).unwrap().is_string());
+            assert!(compound.get(&BString::from("list")).unwrap().is_list());
+        }};
+    }
+
+    check!(to_be_bytes, from_be_bytes);
+    check!(to_le_bytes, from_le_bytes);
+    check!(to_net_bytes, from_net_bytes);
+}
+
+/// A user struct with an [`NbtByteArray`] field must round-trip as a real NBT
+/// `ByteArray` tag for every endianness, and decode into a `Value::ByteArray`.
+#[test]
+fn nbt_byte_array_field() {
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[serde(rename = "Holder")]
+    struct Holder {
+        data: NbtByteArray,
+    }
+
+    let holder = Holder {
+        data: NbtByteArray::from(vec![0x00, 0x7f, 0x80, 0xff]),
+    };
+
+    macro_rules! check {
+        ($to:ident, $from:ident) => {{
+            let bytes = $to(&holder).unwrap();
+
+            // Round-trips through the wrapper.
+            let back: Holder = $from(&mut bytes.as_slice()).unwrap();
+            assert_eq!(back, holder);
+
+            // Decodes into a `Value::ByteArray` (i.e. it really is a ByteArray tag).
+            let value: Value = $from(&mut bytes.as_slice()).unwrap();
+            let field = value
+                .as_compound()
+                .unwrap()
+                .get(&BString::from("data"))
+                .unwrap();
+            assert!(field.is_byte_array());
+            assert_eq!(
+                field.as_byte_array().unwrap().as_slice(),
+                holder.data.as_bytes()
             );
         }};
     }

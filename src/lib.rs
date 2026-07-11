@@ -16,6 +16,7 @@ pub use crate::nbt::ser::{
     Serializer, to_be_bytes, to_be_bytes_in, to_bytes, to_bytes_in, to_le_bytes, to_le_bytes_in,
     to_net_bytes, to_net_bytes_in,
 };
+pub use crate::nbt_byte_array::NbtByteArray;
 pub use crate::nbt_string::NbtString;
 pub use crate::value::Value;
 pub use bstr::{self, BString};
@@ -30,6 +31,7 @@ mod test;
 
 mod error;
 mod nbt;
+mod nbt_byte_array;
 mod nbt_string;
 
 #[cfg(feature = "snbt")]

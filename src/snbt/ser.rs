@@ -5,6 +5,7 @@ use serde::{
 
 use crate::Error;
 use crate::error::Unsupported;
+use crate::nbt::ser::RAW_STRING_TOKEN;
 
 macro_rules! forward_unsupported {
     ($($ty: ident),+) => {
@@ -50,6 +51,11 @@ pub fn to_string<T: Serialize>(value: &T) -> Result<String, Error> {
 pub struct Serializer {
     curr_key: Option<String>,
     is_key: bool,
+    /// Set while serialising the payload of a [`RAW_STRING_TOKEN`] newtype
+    /// struct (e.g. [`crate::NbtString`]): the next `serialize_bytes` call then
+    /// renders a (lossily decoded) quoted string instead of a `[B;...]` byte
+    /// array, mirroring the binary serializer's raw-string handling.
+    force_string: bool,
     pub(crate) output: String,
 }
 
@@ -59,6 +65,7 @@ impl Serializer {
         Serializer {
             curr_key: None,
             is_key: false,
+            force_string: false,
             output: String::new(),
         }
     }
@@ -125,6 +132,10 @@ impl ser::Serializer for &mut Serializer {
     }
 
     fn serialize_str(self, v: &str) -> Result<(), Error> {
+        // A raw-string payload may reach here directly instead of through
+        // `serialize_bytes`; the marker is consumed either way.
+        self.force_string = false;
+
         if self.is_key {
             self.curr_key = Some(v.to_owned());
         }
@@ -153,22 +164,26 @@ impl ser::Serializer for &mut Serializer {
     }
 
     fn serialize_bytes(self, v: &[u8]) -> std::result::Result<Self::Ok, Self::Error> {
-        self.collect_seq(v.iter().map(|i| *i as i8))
+        // Raw NBT string payloads (see `RAW_STRING_TOKEN`) are text, so render
+        // them as a quoted, lossily UTF-8 decoded string rather than as a byte
+        // array.
+        if self.force_string {
+            self.force_string = false;
+            return self.serialize_str(&String::from_utf8_lossy(v));
+        }
 
-        // if !v.is_empty() {
-        //     self.output.push_str("[B;");
-        //     self.output.push_str(&v[0].to_string());
-        // } else {
-        //     self.output.push('[');
-        // }
-
-        // v.iter().skip(1).map(u8::to_string).for_each(|b| {
-        //     self.output.push(',');
-        //     self.output.push_str(&b)
-        // });
-        // self.output.push(']');
-
-        // Ok(())
+        // SNBT renders a byte array as a typed array literal: `[B;1b,2b,3b]`.
+        // Each element is a signed byte with a `b` suffix.
+        self.output.push_str("[B;");
+        for (i, b) in v.iter().enumerate() {
+            if i > 0 {
+                self.output.push(',');
+            }
+            self.output.push_str(&b.cast_signed().to_string());
+            self.output.push('b');
+        }
+        self.output.push(']');
+        Ok(())
     }
 
     fn serialize_unit(self) -> std::result::Result<Self::Ok, Self::Error> {
@@ -194,12 +209,17 @@ impl ser::Serializer for &mut Serializer {
 
     fn serialize_newtype_struct<T>(
         self,
-        _name: &'static str,
+        name: &'static str,
         value: &T,
     ) -> std::result::Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
+        if name == RAW_STRING_TOKEN {
+            // The wrapped bytes represent an NBT string (e.g. `NbtString`), so
+            // make the upcoming `serialize_bytes` call emit a quoted string.
+            self.force_string = true;
+        }
         value.serialize(self)
     }
 

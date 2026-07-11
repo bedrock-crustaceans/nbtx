@@ -29,9 +29,13 @@ pub enum Value {
     Double(f64),
     /// A byte array.
     ///
-    /// This type is not used when deserialising due to issues with `serde`.
-    /// In case you are defining your own types, you can use [`serde_bytes`](https://crates.io/crates/serde_bytes)
-    /// to make use of the byte array type.
+    /// Deserialising an NBT `ByteArray` tag into a [`Value`] yields this
+    /// variant, and it re-serialises byte-for-byte as a `ByteArray` tag for all
+    /// three endianness variants. When defining your own types, use
+    /// [`NbtByteArray`](crate::NbtByteArray) or a
+    /// [`serde_bytes`](https://crates.io/crates/serde_bytes)-style field to map
+    /// to the `ByteArray` tag; a plain `Vec<i8>` serialises as a `List` of
+    /// `Byte`s instead.
     ByteArray(Vec<u8>),
     /// A string of raw bytes.
     ///
@@ -636,8 +640,8 @@ impl<'de> Visitor<'de> for ValueVisitor {
 
     // NBT String tags are routed through the byte-oriented entry points so that
     // non-UTF-8 payloads reach a `Value` losslessly as a `Value::String`. NBT
-    // `ByteArray` tags never reach here: they are surfaced as sequences (see
-    // `visit_seq`).
+    // `ByteArray` tags never reach here: they are surfaced through
+    // `visit_newtype_struct` so they stay distinct from strings (see below).
     #[inline]
     fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
     where
@@ -652,6 +656,59 @@ impl<'de> Visitor<'de> for ValueVisitor {
         E: de::Error,
     {
         Ok(Value::String(BString::from(v)))
+    }
+
+    // NBT `ByteArray` tags are surfaced through a newtype struct by both the
+    // binary and SNBT deserializers. String tags arrive via `visit_byte_buf`
+    // and lists via `visit_seq`, so routing byte arrays here keeps all three
+    // distinct and lets a `ByteArray` round-trip losslessly as
+    // `Value::ByteArray`. The inner value is served as raw bytes.
+    #[inline]
+    fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RawBytesVisitor;
+
+        impl<'de> Visitor<'de> for RawBytesVisitor {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a raw NBT byte array")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(v.to_vec())
+            }
+
+            fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(v)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut out = Vec::new();
+                if let Some(hint) = seq.size_hint() {
+                    out.reserve(hint);
+                }
+                while let Some(byte) = seq.next_element::<i8>()? {
+                    out.push(byte.cast_unsigned());
+                }
+                Ok(out)
+            }
+        }
+
+        deserializer
+            .deserialize_byte_buf(RawBytesVisitor)
+            .map(Value::ByteArray)
     }
 
     #[inline]

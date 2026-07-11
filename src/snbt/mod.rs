@@ -93,6 +93,38 @@ mod tests {
         println!("Deserialised: {val:?}");
     }
 
+    /// A bare [`crate::NbtString`] must render as a quoted SNBT string (via the
+    /// raw-string token), not as a `[B;...]` byte array, and a
+    /// [`crate::NbtByteArray`] must render as a `[B;...]` literal.
+    #[test]
+    fn snbt_raw_string_and_byte_array() {
+        #[derive(Debug, serde::Serialize)]
+        struct Holder {
+            name: crate::NbtString,
+            data: crate::NbtByteArray,
+        }
+
+        let holder = Holder {
+            name: crate::NbtString::from("Hello, World!"),
+            data: crate::NbtByteArray::from(vec![1, 2, 0xff]),
+        };
+
+        let out = crate::snbt::to_string(&holder).unwrap();
+        assert_eq!(out, r#"{name:"Hello, World!",data:[B;1b,2b,-1b]}"#);
+
+        // The byte array round-trips through a `Value`.
+        let value: Value = crate::snbt::from_string(&out).unwrap();
+        let compound = value.as_compound().unwrap();
+        assert_eq!(
+            compound.get(&crate::BString::from("name")).unwrap(),
+            &Value::String("Hello, World!".into())
+        );
+        assert_eq!(
+            compound.get(&crate::BString::from("data")).unwrap(),
+            &Value::ByteArray(vec![1, 2, 0xff])
+        );
+    }
+
     #[test]
     fn snbt_all() {
         // let value = Value::Compound(HashMap::from([

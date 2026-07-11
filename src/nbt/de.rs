@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use paste::paste;
+use serde::de::value::BytesDeserializer;
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, de};
 use varint_rs::VarintReader;
@@ -329,10 +330,23 @@ where
                 // directly, so it keeps validating UTF-8.
                 FieldType::String => self.deserialize_byte_buf(visitor),
                 FieldType::Compound => self.deserialize_map(visitor),
-                FieldType::List
-                | FieldType::ByteArray
-                | FieldType::IntArray
-                | FieldType::LongArray => self.deserialize_seq(visitor),
+                // Surface a ByteArray tag through `visit_newtype_struct` so a
+                // self-describing target (`Value`) can tell it apart from a
+                // String tag (raw bytes via `visit_byte_buf`) and from a plain
+                // List, keeping it lossless as `Value::ByteArray`. Concrete
+                // targets (`Vec<i8>`, `serde_bytes`, ...) never reach here; they
+                // call `deserialize_seq`/`deserialize_bytes` directly.
+                //
+                // Note: foreign self-describing value types whose visitors do
+                // not implement `Visitor::visit_newtype_struct` will error on
+                // ByteArray tags here; `nbtx::Value` handles it.
+                FieldType::ByteArray => {
+                    let buf = self.read_raw_bytes()?;
+                    visitor.visit_newtype_struct(BytesDeserializer::new(&buf))
+                }
+                FieldType::List | FieldType::IntArray | FieldType::LongArray => {
+                    self.deserialize_seq(visitor)
+                }
             }
         }
     }

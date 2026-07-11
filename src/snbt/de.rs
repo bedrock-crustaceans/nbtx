@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde::de::value::BytesDeserializer;
 use serde::de::{self, Visitor};
 
 use crate::error::{
@@ -182,6 +183,88 @@ impl<'re> Deserializer<'re> {
                 index: Some(self.current_index()),
             }))
         }
+    }
+
+    /// Peeks at an upcoming typed-array literal (`[B;`, `[I;`, `[L;`) and
+    /// returns its type character without consuming any input. Returns `None`
+    /// for a plain list `[` or anything else.
+    fn peek_array_marker(&self) -> Option<char> {
+        let mut it = self.input.chars().filter(|&c| c != ' ' && c != '\n');
+        if it.next()? != '[' {
+            return None;
+        }
+        let ty = it.next()?;
+        if matches!(ty, 'B' | 'I' | 'L') && it.next()? == ';' {
+            Some(ty)
+        } else {
+            None
+        }
+    }
+
+    /// Parses a byte-array literal `[B;1b,2b,...]` into its raw bytes. Assumes
+    /// [`peek_array_marker`](Self::peek_array_marker) already confirmed a `B`
+    /// typed array.
+    fn parse_byte_array(&mut self) -> Result<Vec<u8>, Error> {
+        // Consume the `[B;` prefix.
+        self.next_char()?; // '['
+        self.next_char()?; // 'B'
+        let semi = self.next_char()?;
+        if semi != ';' {
+            return Err(Error::UnexpectedSymbol(UnexpectedSymbol {
+                found: semi,
+                expected: Some(';'),
+                #[cfg(feature = "error-context")]
+                at: self
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
+                index: Some(self.current_index()),
+            }));
+        }
+
+        let mut out = Vec::new();
+        loop {
+            match self.peek_char()? {
+                ']' => {
+                    self.next_char()?;
+                    break;
+                }
+                ',' => {
+                    self.next_char()?;
+                }
+                _ => out.push(self.parse_array_byte()?),
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Parses a single signed byte element (e.g. `62b`, `-1b`, or `7`) of a
+    /// byte-array literal, returning its raw bit pattern.
+    fn parse_array_byte(&mut self) -> Result<u8, Error> {
+        let (start, _) = self.peek_char_with_index()?;
+        let end = self.input[start..]
+            .find([',', ']', ' ', '\n'])
+            .map_or(self.input.len(), |i| start + i);
+
+        let token = &self.input[start..end];
+        let digits = token.strip_suffix(['b', 'B']).unwrap_or(token);
+        let parsed = digits.parse::<i8>().map_err(|error| {
+            Error::ParseIntError(ParseIntError {
+                error,
+                #[cfg(feature = "error-context")]
+                at: self
+                    .curr_key
+                    .clone()
+                    .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
+                index: Some(self.current_index()),
+            })
+        })?;
+
+        self.skip(end)?;
+        Ok(parsed.cast_unsigned())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -369,6 +452,24 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
 
         match self.peek_char()? {
             '{' => self.deserialize_map(visitor),
+            '[' if self.peek_array_marker() == Some('B') => {
+                // A byte-array literal is surfaced through a newtype struct so a
+                // self-describing target (`Value`) reconstructs it as a
+                // `Value::ByteArray` rather than a list of bytes.
+                //
+                // Note: foreign self-describing value types whose visitors do
+                // not implement `Visitor::visit_newtype_struct` will error on
+                // byte-array literals here; `nbtx::Value` handles it.
+                let bytes = self.parse_byte_array()?;
+                visitor.visit_newtype_struct(BytesDeserializer::new(&bytes))
+            }
+            '[' if matches!(self.peek_array_marker(), Some('I' | 'L')) => {
+                // `[I;...]` / `[L;...]` parsing is not implemented yet; give a
+                // clearer error than an unexpected-symbol failure on 'I'/'L'.
+                Err(Error::Other(String::from(
+                    "parsing `[I;...]` and `[L;...]` typed array literals is not yet supported",
+                )))
+            }
             '[' => self.deserialize_seq(visitor),
             '0'..='9' => self.parse_number(visitor, None),
             '"' => self.deserialize_string(visitor),
@@ -527,6 +628,13 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
     where
         V: Visitor<'de>,
     {
+        // A byte-array literal (`[B;...]`) is served as raw bytes so that
+        // byte-oriented targets such as `NbtByteArray`/`serde_bytes` round-trip.
+        if !self.is_key && self.peek_array_marker() == Some('B') {
+            let bytes = self.parse_byte_array()?;
+            return visitor.visit_byte_buf(bytes);
+        }
+
         // SNBT is a text format, so a byte-oriented target (e.g. `bstr::BString`
         // or a `Value`'s string/key) is served the raw bytes of the parsed
         // string. Any escaping/lossy behaviour is inherited from the text form.
