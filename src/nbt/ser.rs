@@ -579,6 +579,10 @@ where
             self.curr_key
         )
     }
+
+    fn is_human_readable(&self) -> bool {
+        false
+    }
 }
 
 impl<W, F> SerializeSeq for &mut Serializer<W, F>
@@ -934,6 +938,12 @@ where
             "serializing struct variants is not supported",
             self.ser.curr_key
         )
+    }
+
+    fn is_human_readable(&self) -> bool {
+        // Mirror the main binary serializer so that self-describing values
+        // (e.g. `Value`) take the binary (raw-string token) path here too.
+        false
     }
 }
 

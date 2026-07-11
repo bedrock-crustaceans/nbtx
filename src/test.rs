@@ -1,8 +1,9 @@
 #![allow(const_item_mutation)] // We make use of constant mutation on purpose in this test.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 
+use bstr::BString;
 use byteorder::BigEndian;
 use serde::{Deserialize, Serialize};
 
@@ -42,36 +43,33 @@ fn read_write_option() {
 
 #[test]
 fn read_write_all() {
-    let value = Value::Compound(HashMap::from([
-        ("byte".to_owned(), Value::Byte(42)),
-        ("short".to_owned(), Value::Short(42)),
-        ("int".to_owned(), Value::Int(42)),
-        ("long".to_owned(), Value::Long(42)),
-        ("float".to_owned(), Value::Float(42.0)),
-        ("double".to_owned(), Value::Double(42.0)),
-        ("byte_array".to_owned(), Value::ByteArray(vec![1, 2, 3])),
+    let value = Value::Compound(BTreeMap::from([
+        ("byte".into(), Value::Byte(42)),
+        ("short".into(), Value::Short(42)),
+        ("int".into(), Value::Int(42)),
+        ("long".into(), Value::Long(42)),
+        ("float".into(), Value::Float(42.0)),
+        ("double".into(), Value::Double(42.0)),
+        ("byte_array".into(), Value::ByteArray(vec![1, 2, 3])),
+        ("string".into(), Value::String("Hello, World!".into())),
         (
-            "string".to_owned(),
-            Value::String("Hello, World!".to_owned()),
-        ),
-        (
-            "list".to_owned(),
+            "list".into(),
             Value::List(vec![
-                Value::Compound(HashMap::from([(
-                    "name".to_owned(),
-                    Value::String("Compound 1".to_owned()),
+                Value::Compound(BTreeMap::from([(
+                    "name".into(),
+                    Value::String("Compound 1".into()),
                 )])),
-                Value::Compound(HashMap::from([(
-                    "name".to_owned(),
-                    Value::String("Compound 2".to_owned()),
+                Value::Compound(BTreeMap::from([(
+                    "name".into(),
+                    Value::String("Compound 2".into()),
                 )])),
             ]),
         ),
         (
-            "compound".to_owned(),
-            Value::Compound(HashMap::from([(
-                "name".to_owned(),
-                Value::String("Compound 3".to_owned()),
+            "compound".into(),
+            Value::Compound(BTreeMap::from([(
+                "name".into(),
+                Value::String("Compound 3".into()),
             )])),
         ),
     ]));
@@ -333,6 +331,58 @@ fn raw_string_empty() {
             let back: RawHolder = $from(&mut bytes.as_slice()).unwrap();
             assert_eq!(back, holder);
             assert!(back.value.as_bytes().is_empty());
+        }};
+    }
+
+    check!(to_be_bytes, from_be_bytes);
+    check!(to_le_bytes, from_le_bytes);
+    check!(to_net_bytes, from_net_bytes);
+}
+
+/// A [`Value`] containing non-UTF-8 string values *and* non-UTF-8 compound keys
+/// must round-trip losslessly (byte-for-byte after re-serialization) for every
+/// endianness.
+#[test]
+fn value_non_utf8_roundtrip() {
+    // 0xff / 0xfe / 0x80 are not valid UTF-8, and an interior NUL is included.
+    let raw_value: BString = BString::from(vec![0x68, 0x69, 0xff, 0xfe, 0x00, 0x80, 0x21]);
+    let raw_key: BString = BString::from(vec![0x6b, 0xff, 0xfe, 0x79]);
+    assert!(std::str::from_utf8(raw_value.as_ref()).is_err());
+    assert!(std::str::from_utf8(raw_key.as_ref()).is_err());
+
+    let value = Value::Compound(BTreeMap::from([
+        ("plain".into(), Value::String("Hello, World!".into())),
+        (raw_key.clone(), Value::String(raw_value.clone())),
+        (
+            "nested".into(),
+            Value::Compound(BTreeMap::from([(
+                raw_key.clone(),
+                Value::List(vec![
+                    Value::String(raw_value.clone()),
+                    Value::String("mixed".into()),
+                ]),
+            )])),
+        ),
+    ]));
+
+    macro_rules! check {
+        ($to:ident, $from:ident) => {{
+            let bytes = $to(&value).unwrap();
+
+            // Deserialises back into an equal `Value`...
+            let back: Value = $from(&mut bytes.as_slice()).unwrap();
+            assert_eq!(back, value);
+
+            // ...and re-serialises to the exact same bytes (lossless).
+            let re_encoded = $to(&back).unwrap();
+            assert_eq!(re_encoded, bytes);
+
+            // The raw bytes survived untouched.
+            let compound = back.as_compound().unwrap();
+            assert_eq!(
+                compound.get(&raw_key).unwrap().as_string().unwrap(),
+                &raw_value
+            );
         }};
     }
 

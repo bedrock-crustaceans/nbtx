@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+use bstr::{BString, ByteSlice};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+use crate::nbt::ser::RAW_STRING_TOKEN;
 
 /// General NBT value type that can represent any value.
 ///
@@ -30,12 +33,21 @@ pub enum Value {
     /// In case you are defining your own types, you can use [`serde_bytes`](https://crates.io/crates/serde_bytes)
     /// to make use of the byte array type.
     ByteArray(Vec<u8>),
-    /// A UTF-8 string.
-    String(String),
+    /// A string of raw bytes.
+    ///
+    /// NBT strings are not guaranteed to be valid UTF-8 (Java uses MUTF-8 and
+    /// Bedrock allows arbitrary bytes), so the raw bytes are stored in a
+    /// [`bstr::BString`] rather than a [`String`]. Construction from string
+    /// literals still works ergonomically, e.g. `Value::String("abc".into())`.
+    String(BString),
     /// List of an arbitrary NBT value.
     List(Vec<Value>),
     /// Key-value map.
-    Compound(HashMap<String, Value>),
+    ///
+    /// Keys are stored as [`bstr::BString`] because NBT string keys are not
+    /// guaranteed to be valid UTF-8. A [`BTreeMap`] is used so that the entries
+    /// have a deterministic ordering.
+    Compound(BTreeMap<BString, Value>),
     /// An array of integers.
     IntArray(Vec<i32>),
     /// An array of longs.
@@ -109,13 +121,34 @@ impl Value {
         Long = i64,
         Float = f32,
         Double = f64,
-        String = String,
+        String = BString,
         List = Vec<Self>,
-        Compound = HashMap<String, Self>,
+        Compound = BTreeMap<BString, Self>,
         ByteArray = Vec<u8>,
         IntArray = Vec<i32>,
         LongArray = Vec<i64>
     );
+}
+
+impl From<BString> for Value {
+    #[inline]
+    fn from(value: BString) -> Self {
+        Value::String(value)
+    }
+}
+
+impl From<String> for Value {
+    #[inline]
+    fn from(value: String) -> Self {
+        Value::String(BString::from(value))
+    }
+}
+
+impl From<&str> for Value {
+    #[inline]
+    fn from(value: &str) -> Self {
+        Value::String(BString::from(value))
+    }
 }
 
 impl PartialEq<Value> for Value {
@@ -288,21 +321,24 @@ impl PartialEq<&[u8]> for &mut Value {
 impl PartialEq<&str> for Value {
     #[inline]
     fn eq(&self, rhs: &&str) -> bool {
-        self.as_string().is_some_and(|lhs| lhs == rhs)
+        self.as_string()
+            .is_some_and(|lhs| lhs.as_slice() == rhs.as_bytes())
     }
 }
 
 impl PartialEq<&str> for &Value {
     #[inline]
     fn eq(&self, rhs: &&str) -> bool {
-        self.as_string().is_some_and(|lhs| lhs == rhs)
+        self.as_string()
+            .is_some_and(|lhs| lhs.as_slice() == rhs.as_bytes())
     }
 }
 
 impl PartialEq<&str> for &mut Value {
     #[inline]
     fn eq(&self, rhs: &&str) -> bool {
-        self.as_string().is_some_and(|lhs| lhs == rhs)
+        self.as_string()
+            .is_some_and(|lhs| lhs.as_slice() == rhs.as_bytes())
     }
 }
 
@@ -327,23 +363,23 @@ impl PartialEq<&[Value]> for &mut Value {
     }
 }
 
-impl PartialEq<HashMap<String, Value>> for Value {
+impl PartialEq<BTreeMap<BString, Value>> for Value {
     #[inline]
-    fn eq(&self, rhs: &HashMap<String, Value>) -> bool {
+    fn eq(&self, rhs: &BTreeMap<BString, Value>) -> bool {
         self.as_compound() == Some(rhs)
     }
 }
 
-impl PartialEq<HashMap<String, Value>> for &Value {
+impl PartialEq<BTreeMap<BString, Value>> for &Value {
     #[inline]
-    fn eq(&self, rhs: &HashMap<String, Value>) -> bool {
+    fn eq(&self, rhs: &BTreeMap<BString, Value>) -> bool {
         self.as_compound() == Some(rhs)
     }
 }
 
-impl PartialEq<HashMap<String, Value>> for &mut Value {
+impl PartialEq<BTreeMap<BString, Value>> for &mut Value {
     #[inline]
-    fn eq(&self, rhs: &HashMap<String, Value>) -> bool {
+    fn eq(&self, rhs: &BTreeMap<BString, Value>) -> bool {
         self.as_compound() == Some(rhs)
     }
 }
@@ -400,7 +436,7 @@ impl Hash for Value {
             Value::Short(v) => state.write_i16(*v),
             Value::Int(v) => state.write_i32(*v),
             Value::Long(v) => state.write_i64(*v),
-            Value::String(v) => state.write(v.as_bytes()),
+            Value::String(v) => state.write(v.as_slice()),
             Value::Float(v) => {
                 // f32 does not implement Hash, so simply hash the byte representation
                 // IEEE floats have + 0 and - 0, which are the same value but have different byte representations
@@ -423,7 +459,7 @@ impl Hash for Value {
             }
             Value::Compound(map) => {
                 for (k, v) in map {
-                    state.write(k.as_bytes());
+                    state.write(k.as_slice());
                     v.hash(state);
                 }
             }
@@ -471,18 +507,48 @@ impl Serialize for Value {
             Value::Float(float) => ser.serialize_f32(*float),
             Value::Double(double) => ser.serialize_f64(*double),
             Value::ByteArray(array) => ser.serialize_bytes(array),
-            Value::String(string) => ser.serialize_str(string),
+            Value::String(string) => {
+                if ser.is_human_readable() {
+                    // Human-readable formats (e.g. SNBT) are text, so hand over
+                    // a (lossily) UTF-8 decoded string.
+                    ser.serialize_str(&string.to_str_lossy())
+                } else {
+                    // Binary NBT: emit a raw String tag via the magic newtype
+                    // token so non-UTF-8 bytes round-trip losslessly.
+                    ser.serialize_newtype_struct(RAW_STRING_TOKEN, string)
+                }
+            }
             Value::List(seq) => serialize_seq(ser, seq),
             Value::Compound(map) => {
+                let human_readable = ser.is_human_readable();
                 let mut map_ser = ser.serialize_map(Some(map.len()))?;
                 for (k, v) in map {
-                    map_ser.serialize_entry(k, v)?;
+                    if human_readable {
+                        map_ser.serialize_entry(&k.to_str_lossy(), v)?;
+                    } else {
+                        map_ser.serialize_entry(&RawString(k), v)?;
+                    }
                 }
                 map_ser.end()
             }
             Value::IntArray(seq) => serialize_seq(ser, seq),
             Value::LongArray(seq) => serialize_seq(ser, seq),
         }
+    }
+}
+
+/// Serializes a [`BString`] as a raw NBT String tag via the magic newtype
+/// token, so that compound keys holding non-UTF-8 bytes round-trip losslessly
+/// through the binary serializer.
+struct RawString<'a>(&'a BString);
+
+impl Serialize for RawString<'_> {
+    #[inline]
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        ser.serialize_newtype_struct(RAW_STRING_TOKEN, self.0)
     }
 }
 
@@ -557,7 +623,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     where
         E: de::Error,
     {
-        Ok(Value::String(v.to_owned()))
+        Ok(Value::String(BString::from(v)))
     }
 
     #[inline]
@@ -565,7 +631,19 @@ impl<'de> Visitor<'de> for ValueVisitor {
     where
         E: de::Error,
     {
-        Ok(Value::String(v))
+        Ok(Value::String(BString::from(v)))
+    }
+
+    // NBT String tags are routed through the byte-oriented entry points so that
+    // non-UTF-8 payloads reach a `Value` losslessly as a `Value::String`. NBT
+    // `ByteArray` tags never reach here: they are surfaced as sequences (see
+    // `visit_seq`).
+    #[inline]
+    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Value::String(BString::from(v)))
     }
 
     #[inline]
@@ -573,7 +651,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     where
         E: de::Error,
     {
-        Ok(Value::ByteArray(v))
+        Ok(Value::String(BString::from(v)))
     }
 
     #[inline]
@@ -598,10 +676,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut out: HashMap<String, Value> = HashMap::new();
-        if let Some(hint) = map.size_hint() {
-            out.reserve(hint);
-        }
+        let mut out: BTreeMap<BString, Value> = BTreeMap::new();
 
         while let Some((key, value)) = map.next_entry()? {
             out.insert(key, value);

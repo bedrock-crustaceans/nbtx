@@ -322,7 +322,12 @@ where
                 FieldType::Long => self.deserialize_i64(visitor),
                 FieldType::Float => self.deserialize_f32(visitor),
                 FieldType::Double => self.deserialize_f64(visitor),
-                FieldType::String => self.deserialize_string(visitor),
+                // Route String tags through the byte-oriented path so that a
+                // self-describing target (i.e. `Value`) receives the raw bytes
+                // without UTF-8 validation, keeping non-UTF-8 strings lossless.
+                // A concrete `String` field still calls `deserialize_string`
+                // directly, so it keeps validating UTF-8.
+                FieldType::String => self.deserialize_byte_buf(visitor),
                 FieldType::Compound => self.deserialize_map(visitor),
                 FieldType::List
                 | FieldType::ByteArray

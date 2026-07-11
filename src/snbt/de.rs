@@ -523,18 +523,25 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
         visitor.visit_string(v)
     }
 
-    fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        todo!()
+        // SNBT is a text format, so a byte-oriented target (e.g. `bstr::BString`
+        // or a `Value`'s string/key) is served the raw bytes of the parsed
+        // string. Any escaping/lossy behaviour is inherited from the text form.
+        let v = self.parse_string()?.to_owned();
+        if self.is_key {
+            self.curr_key = Some(v.clone());
+        }
+        visitor.visit_byte_buf(v.into_bytes())
     }
 
-    fn deserialize_byte_buf<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        todo!()
+        self.deserialize_bytes(visitor)
     }
 
     fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
