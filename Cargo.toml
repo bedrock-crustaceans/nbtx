@@ -21,6 +21,7 @@ paste = "1.0"
 thiserror = "2.0"
 byteorder = "1.5"
 varint-rs = "2.2"
+bstr = { version = "1.0", default-features = false, features = ["std", "serde"] }
 
 [[example]]
 name = "hello_world"
