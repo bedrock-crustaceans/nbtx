@@ -10,6 +10,16 @@ use varint_rs::VarintWriter;
 use crate::error::Unsupported;
 use crate::{EndiannessImpl, Error, FieldType, NetworkLittleEndian, Variant};
 
+/// Magic newtype-struct name used to signal that the inner bytes should be
+/// written as a raw NBT `String` tag payload (length-prefixed, no UTF-8
+/// validation) rather than as a `ByteArray`.
+///
+/// This mirrors the token pattern used by `serde_bytes`/`fastnbt`: a
+/// [`Serialize`] impl (see [`crate::NbtString`]) emits
+/// `serialize_newtype_struct(RAW_STRING_TOKEN, &bytes)` and this serializer
+/// intercepts that name.
+pub(crate) const RAW_STRING_TOKEN: &str = "__nbtx_raw_string";
+
 macro_rules! unsupported {
     ($msg:expr, $key:expr) => {
         Err(Error::Unsupported(Unsupported {
@@ -331,6 +341,20 @@ where
     pub fn into_inner(self) -> W {
         self.writer
     }
+
+    /// Writes an NBT String tag payload: a length prefix (short for the
+    /// little/big endian variants, varint for the network variant) followed by
+    /// the raw bytes. No UTF-8 validation is performed on the bytes.
+    fn write_string_payload(&mut self, v: &[u8]) -> Result<(), Error> {
+        match E::AS_ENUM {
+            Variant::BigEndian => self.writer.write_u16::<BigEndian>(v.len() as u16),
+            Variant::LittleEndian => self.writer.write_u16::<LittleEndian>(v.len() as u16),
+            Variant::NetworkEndian => self.writer.write_u32_varint(v.len() as u32),
+        }?;
+
+        self.writer.write_all(v)?;
+        Ok(())
+    }
 }
 
 impl<W, E> ser::Serializer for &mut Serializer<W, E>
@@ -415,14 +439,7 @@ where
     }
 
     fn serialize_str(self, v: &str) -> Result<(), Error> {
-        match E::AS_ENUM {
-            Variant::BigEndian => self.writer.write_u16::<BigEndian>(v.len() as u16),
-            Variant::LittleEndian => self.writer.write_u16::<LittleEndian>(v.len() as u16),
-            Variant::NetworkEndian => self.writer.write_u32_varint(v.len() as u32),
-        }?;
-
-        self.writer.write_all(v.as_bytes())?;
-        Ok(())
+        self.write_string_payload(v.as_bytes())
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<(), Error> {
@@ -463,10 +480,17 @@ where
 
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
         self,
-        _name: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<(), Error> {
-        value.serialize(self)
+        if name == RAW_STRING_TOKEN {
+            // Write the inner bytes as a raw NBT String payload rather than as a
+            // ByteArray. The inner value is expected to serialize via
+            // `serialize_bytes`/`serialize_str`.
+            value.serialize(RawStringSerializer { ser: self })
+        } else {
+            value.serialize(self)
+        }
     }
 
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
@@ -823,13 +847,19 @@ where
 
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
         self,
-        _name: &'static str,
+        name: &'static str,
         _value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        unsupported!(
-            "serializing newtype structs is not supported",
-            self.ser.curr_key
-        )
+        if name == RAW_STRING_TOKEN {
+            // A raw string is written to the stream as a normal String tag.
+            self.ser.writer.write_u8(FieldType::String as u8)?;
+            Ok(false)
+        } else {
+            unsupported!(
+                "serializing newtype structs is not supported",
+                self.ser.curr_key
+            )
+        }
     }
 
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
@@ -991,5 +1021,160 @@ where
 
     fn end(self) -> Result<bool, Self::Error> {
         Ok(false)
+    }
+}
+
+/// Serializer used for the payload of a [`RAW_STRING_TOKEN`] newtype struct.
+///
+/// It only accepts a byte or string payload, which it writes as a raw NBT
+/// String tag payload (length prefix + raw bytes, no UTF-8 validation). Every
+/// other serde call is rejected, since the token is only meant to wrap a
+/// byte-string value such as [`bstr::BString`].
+struct RawStringSerializer<'a, W, E>
+where
+    W: WriteBytesExt,
+    E: EndiannessImpl,
+{
+    ser: &'a mut Serializer<W, E>,
+}
+
+/// Returns the `unsupported` error for when the raw-string serializer is
+/// handed a value that is not a byte or string payload.
+macro_rules! raw_string_error {
+    ($self: ident) => {
+        unsupported!(
+            "raw NBT string payload must be serialized via bytes or a string",
+            $self.ser.curr_key
+        )
+    };
+}
+
+macro_rules! raw_string_unsupported {
+    ($($ty: ident),+) => {
+        paste! {$(
+            fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), Error> {
+                raw_string_error!(self)
+            }
+        )+}
+    }
+}
+
+impl<W, E> ser::Serializer for RawStringSerializer<'_, W, E>
+where
+    W: WriteBytesExt,
+    E: EndiannessImpl,
+{
+    type Ok = ();
+    type Error = Error;
+
+    type SerializeSeq = Impossible<(), Error>;
+    type SerializeTuple = Impossible<(), Error>;
+    type SerializeTupleStruct = Impossible<(), Error>;
+    type SerializeTupleVariant = Impossible<(), Error>;
+    type SerializeMap = Impossible<(), Error>;
+    type SerializeStruct = Impossible<(), Error>;
+    type SerializeStructVariant = Impossible<(), Error>;
+
+    raw_string_unsupported!(
+        bool, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, f32, f64, char
+    );
+
+    fn serialize_str(self, v: &str) -> Result<(), Error> {
+        self.ser.write_string_payload(v.as_bytes())
+    }
+
+    fn serialize_bytes(self, v: &[u8]) -> Result<(), Error> {
+        self.ser.write_string_payload(v)
+    }
+
+    fn serialize_none(self) -> Result<(), Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<(), Error> {
+        value.serialize(self)
+    }
+
+    fn serialize_unit(self) -> Result<(), Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<(), Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<(), Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_newtype_struct<T: Serialize + ?Sized>(
+        self,
+        _name: &'static str,
+        value: &T,
+    ) -> Result<(), Error> {
+        value.serialize(self)
+    }
+
+    fn serialize_newtype_variant<T: Serialize + ?Sized>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<(), Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStruct, Self::Error> {
+        raw_string_error!(self)
+    }
+
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant, Self::Error> {
+        raw_string_error!(self)
     }
 }

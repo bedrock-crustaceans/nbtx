@@ -113,6 +113,60 @@ where
 
         Ok(de)
     }
+
+    /// Reads the raw bytes backing the current tag without any UTF-8
+    /// validation.
+    ///
+    /// This supports both [`String`](FieldType::String) and
+    /// [`ByteArray`](FieldType::ByteArray) tags: the two use different length
+    /// encodings (a short/varint length for strings and a signed 32-bit length
+    /// for byte arrays), so the encoding is selected based on the current tag.
+    /// It is used by the byte-oriented deserialize entry points to give raw
+    /// access to non-UTF-8 NBT strings (e.g. into [`bstr::BString`] via
+    /// [`crate::NbtString`]).
+    fn read_raw_bytes(&mut self) -> Result<Vec<u8>, Error> {
+        let len = match self.next_ty {
+            FieldType::String => match F::AS_ENUM {
+                Variant::BigEndian => self.input.read_u16::<BigEndian>()? as u32,
+                Variant::LittleEndian => self.input.read_u16::<LittleEndian>()? as u32,
+                Variant::NetworkEndian => self.input.read_u32_varint()?,
+            },
+            FieldType::ByteArray => match F::AS_ENUM {
+                Variant::BigEndian => self.input.read_i32::<BigEndian>()?.cast_unsigned(),
+                Variant::LittleEndian => self.input.read_i32::<LittleEndian>()?.cast_unsigned(),
+                Variant::NetworkEndian => self.input.read_i32_varint()?.cast_unsigned(),
+            },
+            actual => {
+                // `UnexpectedType` can only report a single expected tag, but
+                // both String and ByteArray are acceptable here.
+                #[cfg(feature = "error-context")]
+                let at = self
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown"));
+
+                #[cfg(feature = "error-context")]
+                return Err(Error::Other(format!(
+                    "expected tag of type string or byte array, found {actual} at field `{at}`"
+                )));
+
+                #[cfg(not(feature = "error-context"))]
+                return Err(Error::Other(format!(
+                    "expected tag of type string or byte array, found {actual}"
+                )));
+            }
+        };
+
+        let mut buf = vec![0; len as usize];
+        self.input.read_exact(&mut buf)?;
+
+        #[cfg(feature = "error-context")]
+        if self.is_key {
+            self.curr_key = Some(String::from_utf8_lossy(&buf).into_owned());
+        }
+
+        Ok(buf)
+    }
 }
 
 /// Reads a single object of type `T` from the given buffer.
@@ -411,52 +465,25 @@ where
         visitor.visit_string(string)
     }
 
-    fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value, Error>
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported(Unsupported {
-            op: "deserializing byte slices is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
-
-        // is_ty!(ByteArray, self.field_name, self.next_ty);
-
-        // let len = match F::AS_ENUM {
-        //     Variant::BigEndian => self.input.read_i32::<BigEndian>()? as u32,
-        //     Variant::LittleEndian => self.input.read_i32::<LittleEndian>()? as u32,
-        //     Variant::NetworkEndian => self.input.read_i32_varint()? as u32,
-        // };
-
-        // // let mut buf = Vec::with_capacity(len as usize);
-        // // self.input.read_exact(&mut buf)?;
-        // //
-        // todo!("Obtain slice from cursor directly without copying to heap");
-
-        // // visitor.visit_bytes(&buf)
+        // Byte targets (`bstr::BString`, `serde_bytes`, ...) can back either an
+        // NBT String or ByteArray tag. Branch on the actual tag so that a String
+        // tag is handed over as raw bytes without UTF-8 validation.
+        let buf = self.read_raw_bytes()?;
+        visitor.visit_bytes(&buf)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Error>
     where
         V: Visitor<'de>,
     {
-        is_ty!(ByteArray, self.curr_key, self.next_ty);
-
-        let len = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_i32::<BigEndian>()?.cast_unsigned(),
-            Variant::LittleEndian => self.input.read_i32::<LittleEndian>()?.cast_unsigned(),
-            Variant::NetworkEndian => self.input.read_i32_varint()?.cast_unsigned(),
-        };
-
-        let mut buf = vec![0; len as usize];
-        self.input.read_exact(&mut buf)?;
-
+        // Byte targets (`bstr::BString`, `serde_bytes`, ...) can back either an
+        // NBT String or ByteArray tag. Branch on the actual tag so that a String
+        // tag is handed over as raw bytes without UTF-8 validation.
+        let buf = self.read_raw_bytes()?;
         visitor.visit_byte_buf(buf)
     }
 

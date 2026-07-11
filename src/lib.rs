@@ -16,7 +16,9 @@ pub use crate::nbt::ser::{
     Serializer, to_be_bytes, to_be_bytes_in, to_bytes, to_bytes_in, to_le_bytes, to_le_bytes_in,
     to_net_bytes, to_net_bytes_in,
 };
+pub use crate::nbt_string::NbtString;
 pub use crate::value::Value;
+pub use bstr::{self, BString};
 pub use byteorder::{BigEndian, LittleEndian};
 
 use std::fmt::{self, Debug, Display};
@@ -28,6 +30,7 @@ mod test;
 
 mod error;
 mod nbt;
+mod nbt_string;
 
 #[cfg(feature = "snbt")]
 pub mod snbt;

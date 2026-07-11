@@ -7,7 +7,7 @@ use byteorder::BigEndian;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Error, NetworkLittleEndian, Value, from_be_bytes, from_le_bytes, from_net_bytes,
+    Error, NbtString, NetworkLittleEndian, Value, from_be_bytes, from_le_bytes, from_net_bytes,
     nbt::ser::{to_be_bytes, to_bytes, to_le_bytes, to_net_bytes},
 };
 
@@ -208,4 +208,169 @@ fn read_write_player() {
     let _value: Value = from_be_bytes(&mut PLAYER_NAN_VALUE_NBT).unwrap();
     let value_encoded = to_be_bytes(&decoded2).unwrap();
     let _value_decoded: Value = from_be_bytes(&mut value_encoded.as_slice()).unwrap();
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename = "Holder")]
+struct RawHolder {
+    value: NbtString,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename = "Holder")]
+struct StringHolder {
+    value: String,
+}
+
+/// A `String` tag whose payload is not valid UTF-8 must round-trip losslessly
+/// through [`NbtString`] for every endianness, while deserialising the same
+/// payload into a [`String`] must error.
+#[test]
+fn raw_string_invalid_utf8_roundtrip() {
+    // 0xff / 0xfe / 0x80 are not valid UTF-8, and an interior NUL is included
+    // to make sure nothing treats the string as NUL-terminated.
+    let raw: Vec<u8> = vec![0x68, 0x69, 0xff, 0xfe, 0x00, 0x80, 0x21];
+    assert!(std::str::from_utf8(&raw).is_err());
+
+    let holder = RawHolder {
+        value: NbtString::from(raw.clone()),
+    };
+
+    macro_rules! check {
+        ($to:ident, $from:ident) => {{
+            let bytes = $to(&holder).unwrap();
+
+            // (a) round-trips into the wrapper, byte-for-byte.
+            let back: RawHolder = $from(&mut bytes.as_slice()).unwrap();
+            assert_eq!(back, holder);
+            assert_eq!(back.value.as_bytes(), raw.as_slice());
+
+            // (b) deserialising the same payload into `String` errors.
+            let as_string: Result<StringHolder, Error> = $from(&mut bytes.as_slice());
+            assert!(
+                as_string.is_err(),
+                "expected a UTF-8 error when reading invalid bytes into String, got {as_string:?}"
+            );
+        }};
+    }
+
+    check!(to_be_bytes, from_be_bytes);
+    check!(to_le_bytes, from_le_bytes);
+    check!(to_net_bytes, from_net_bytes);
+}
+
+/// [`NbtString`] must work as a compound (map) key, including keys that are
+/// not valid UTF-8.
+#[test]
+fn raw_string_as_map_key() {
+    let invalid_key = NbtString::from(vec![0x6b, 0xff, 0xfe, 0x79]);
+    assert!(std::str::from_utf8(invalid_key.as_bytes()).is_err());
+
+    let map: HashMap<NbtString, String> = HashMap::from([
+        (NbtString::from("plain"), "value".to_owned()),
+        (invalid_key, "raw".to_owned()),
+    ]);
+
+    macro_rules! check {
+        ($to:ident, $from:ident) => {{
+            let bytes = $to(&map).unwrap();
+            let back: HashMap<NbtString, String> = $from(&mut bytes.as_slice()).unwrap();
+            assert_eq!(back, map);
+        }};
+    }
+
+    check!(to_be_bytes, from_be_bytes);
+    check!(to_le_bytes, from_le_bytes);
+    check!(to_net_bytes, from_net_bytes);
+}
+
+/// A `Vec<NbtString>` field must round-trip as an NBT List of String tags,
+/// including non-UTF-8 elements.
+#[test]
+fn raw_string_in_list() {
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct ListHolder {
+        list: Vec<NbtString>,
+    }
+
+    let holder = ListHolder {
+        list: vec![
+            NbtString::from("first"),
+            NbtString::from(vec![0xff, 0xfe, 0x00]),
+            NbtString::from("third"),
+        ],
+    };
+
+    macro_rules! check {
+        ($to:ident, $from:ident) => {{
+            let bytes = $to(&holder).unwrap();
+            let back: ListHolder = $from(&mut bytes.as_slice()).unwrap();
+            assert_eq!(back, holder);
+        }};
+    }
+
+    check!(to_be_bytes, from_be_bytes);
+    check!(to_le_bytes, from_le_bytes);
+    check!(to_net_bytes, from_net_bytes);
+}
+
+/// An empty [`NbtString`] must round-trip and encode identically to an empty
+/// [`String`].
+#[test]
+fn raw_string_empty() {
+    let holder = RawHolder {
+        value: NbtString::new(Vec::new()),
+    };
+    let string_holder = StringHolder {
+        value: String::new(),
+    };
+
+    macro_rules! check {
+        ($to:ident, $from:ident) => {{
+            let bytes = $to(&holder).unwrap();
+            assert_eq!(bytes, $to(&string_holder).unwrap());
+
+            let back: RawHolder = $from(&mut bytes.as_slice()).unwrap();
+            assert_eq!(back, holder);
+            assert!(back.value.as_bytes().is_empty());
+        }};
+    }
+
+    check!(to_be_bytes, from_be_bytes);
+    check!(to_le_bytes, from_le_bytes);
+    check!(to_net_bytes, from_net_bytes);
+}
+
+/// Valid UTF-8 must still work through both [`String`] and [`NbtString`], and
+/// an [`NbtString`] must encode identically to the equivalent [`String`].
+#[test]
+fn raw_string_valid_utf8() {
+    let holder = RawHolder {
+        value: NbtString::from("Hello, World!"),
+    };
+    let string_holder = StringHolder {
+        value: "Hello, World!".to_owned(),
+    };
+
+    macro_rules! check {
+        ($to:ident, $from:ident) => {{
+            let raw_bytes = $to(&holder).unwrap();
+            let string_bytes = $to(&string_holder).unwrap();
+
+            // An NbtString encodes exactly like the equivalent String tag.
+            assert_eq!(raw_bytes, string_bytes);
+
+            // Valid UTF-8 still deserialises into a plain String.
+            let as_string: StringHolder = $from(&mut raw_bytes.as_slice()).unwrap();
+            assert_eq!(as_string, string_holder);
+
+            // ...and round-trips through the wrapper.
+            let as_raw: RawHolder = $from(&mut raw_bytes.as_slice()).unwrap();
+            assert_eq!(as_raw, holder);
+        }};
+    }
+
+    check!(to_be_bytes, from_be_bytes);
+    check!(to_le_bytes, from_le_bytes);
+    check!(to_net_bytes, from_net_bytes);
 }
