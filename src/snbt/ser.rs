@@ -4,16 +4,19 @@ use serde::{
 };
 
 use crate::Error;
+use crate::error::Unsupported;
 
 macro_rules! forward_unsupported {
     ($($ty: ident),+) => {
         paste::paste! {$(
             fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), Error> {
-                Err(Error::Unsupported {
-                    op: concat!("serialization of `", stringify!($ty), "` is not supported"),
-                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")),
-                    index: None
-                })
+                Err(Error::Unsupported(Unsupported {
+                op: concat!("serialization of `", stringify!($ty), "` is not supported"),
+                #[cfg(feature = "error-context")]
+                at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
+                index: None,
+            }))
             }
         )+}
     }
@@ -123,7 +126,7 @@ impl ser::Serializer for &mut Serializer {
 
     fn serialize_str(self, v: &str) -> Result<(), Error> {
         if self.is_key {
-            self.curr_key = Some(v.to_owned())
+            self.curr_key = Some(v.to_owned());
         }
 
         if !self.is_key || v.contains(' ') {
@@ -210,14 +213,16 @@ impl ser::Serializer for &mut Serializer {
     where
         T: ?Sized + Serialize,
     {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "serializing newtype enum variants is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]
             index: None,
-        })
+        }))
     }
 
     fn serialize_seq(
@@ -232,14 +237,16 @@ impl ser::Serializer for &mut Serializer {
         self,
         _len: usize,
     ) -> std::result::Result<Self::SerializeTuple, Self::Error> {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "serializing tuples is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]
             index: None,
-        })
+        }))
     }
 
     fn serialize_tuple_struct(
@@ -247,14 +254,16 @@ impl ser::Serializer for &mut Serializer {
         _name: &'static str,
         _len: usize,
     ) -> std::result::Result<Self::SerializeTupleStruct, Self::Error> {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "serializing tuple structs is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]
             index: None,
-        })
+        }))
     }
 
     fn serialize_tuple_variant(
@@ -264,14 +273,16 @@ impl ser::Serializer for &mut Serializer {
         _variant: &'static str,
         _len: usize,
     ) -> std::result::Result<Self::SerializeTupleVariant, Self::Error> {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "serializing tuple enum variants is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]
             index: None,
-        })
+        }))
     }
 
     fn serialize_map(
@@ -297,14 +308,16 @@ impl ser::Serializer for &mut Serializer {
         _variant: &'static str,
         _len: usize,
     ) -> std::result::Result<Self::SerializeStructVariant, Self::Error> {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "serializing struct enum variants is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]
             index: None,
-        })
+        }))
     }
 }
 
@@ -369,7 +382,7 @@ impl ser::SerializeStruct for &mut Serializer {
     where
         T: ?Sized + Serialize,
     {
-        if !self.output.ends_with("{") {
+        if !self.output.ends_with('{') {
             self.output.push(',');
         }
 

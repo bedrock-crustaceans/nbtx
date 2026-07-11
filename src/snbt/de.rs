@@ -1,6 +1,10 @@
 use serde::Deserialize;
 use serde::de::{self, Visitor};
 
+use crate::error::{
+    ExpectedNumber, ParseFloatError, ParseIntError, UnexpectedEof, UnexpectedSymbol,
+    UnexpectedType, Unsupported,
+};
 use crate::{Error, FieldType};
 
 /// Reads a single object of type `T` from the given string in SNBT format.
@@ -33,6 +37,7 @@ pub fn from_string<'a, T: Deserialize<'a>, S: AsRef<str>>(input: S) -> Result<T,
 pub struct Deserializer<'re> {
     input: &'re str,
     curr_key: Option<String>,
+    #[cfg(feature = "error-context")]
     start_size: usize,
     is_key: bool,
 }
@@ -42,24 +47,28 @@ impl<'re> Deserializer<'re> {
         Self {
             input,
             curr_key: None,
+            #[cfg(feature = "error-context")]
             start_size: input.len(),
             is_key: false,
         }
     }
 
+    #[cfg(feature = "error-context")]
     fn current_index(&self) -> usize {
         self.start_size - self.input.len()
     }
 
     fn skip(&mut self, n: usize) -> Result<(), Error> {
         if self.input.len() < n {
-            return Err(Error::Eof {
+            return Err(Error::UnexpectedEof(UnexpectedEof {
+                #[cfg(feature = "error-context")]
                 at: self
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.current_index()),
-            });
+            }));
         }
 
         self.input = &self.input[n..];
@@ -71,15 +80,16 @@ impl<'re> Deserializer<'re> {
     fn peek_char(&mut self) -> Result<char, Error> {
         self.input
             .chars()
-            .filter(|&c| c != ' ' && c != '\n')
-            .next()
-            .ok_or(Error::Eof {
+            .find(|&c| c != ' ' && c != '\n')
+            .ok_or(Error::UnexpectedEof(UnexpectedEof {
+                #[cfg(feature = "error-context")]
                 at: self
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.current_index()),
-            })
+            }))
     }
 
     /// Skips over all whitespace and newlines and returns the next character without advancing
@@ -87,15 +97,16 @@ impl<'re> Deserializer<'re> {
     fn peek_char_with_index(&mut self) -> Result<(usize, char), Error> {
         self.input
             .char_indices()
-            .filter(|(_, c)| *c != ' ' && *c != '\n')
-            .next()
-            .ok_or(Error::Eof {
+            .find(|(_, c)| *c != ' ' && *c != '\n')
+            .ok_or(Error::UnexpectedEof(UnexpectedEof {
+                #[cfg(feature = "error-context")]
                 at: self
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.current_index()),
-            })
+            }))
     }
 
     /// Returns the next non-whitespace character, advancing the cursor.
@@ -111,15 +122,17 @@ impl<'re> Deserializer<'re> {
         if ch == '"' {
             let first_quote = self.next_char()?;
             if first_quote != '"' {
-                return Err(Error::ExpectedSymbol {
+                return Err(Error::UnexpectedSymbol(UnexpectedSymbol {
                     found: first_quote,
                     expected: Some('"'),
+                    #[cfg(feature = "error-context")]
                     at: self
                         .curr_key
                         .take()
                         .unwrap_or_else(|| String::from("unknown")),
+                    #[cfg(feature = "error-context")]
                     index: Some(self.current_index()),
-                });
+                }));
             }
 
             match self.input.find('"') {
@@ -128,13 +141,15 @@ impl<'re> Deserializer<'re> {
                     self.input = &self.input[len + 1..];
                     Ok(s)
                 }
-                None => Err(Error::Eof {
+                None => Err(Error::UnexpectedEof(UnexpectedEof {
+                    #[cfg(feature = "error-context")]
                     at: self
                         .curr_key
                         .take()
                         .unwrap_or_else(|| String::from("unknown")),
+                    #[cfg(feature = "error-context")]
                     index: Some(self.current_index()),
-                }),
+                })),
             }
         } else if self.is_key {
             // continue until colon
@@ -144,27 +159,32 @@ impl<'re> Deserializer<'re> {
                     self.input = &self.input[len..];
                     Ok(s)
                 }
-                None => Err(Error::Eof {
+                None => Err(Error::UnexpectedEof(UnexpectedEof {
+                    #[cfg(feature = "error-context")]
                     at: self
                         .curr_key
                         .take()
                         .unwrap_or_else(|| String::from("unknown")),
+                    #[cfg(feature = "error-context")]
                     index: Some(self.current_index()),
-                }),
+                })),
             }
         } else {
-            Err(Error::ExpectedSymbol {
+            Err(Error::UnexpectedSymbol(UnexpectedSymbol {
                 found: self.peek_char()?,
                 expected: Some('"'),
+                #[cfg(feature = "error-context")]
                 at: self
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.current_index()),
-            })
+            }))
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_number<'de, V>(
         &mut self,
         visitor: V,
@@ -194,7 +214,7 @@ impl<'re> Deserializer<'re> {
                 break;
             }
 
-            if ch.is_digit(10) {
+            if ch.is_ascii_digit() {
                 last_digit = i;
             }
 
@@ -207,116 +227,128 @@ impl<'re> Deserializer<'re> {
 
         // Seems like there was no number suffix or an end to the compound or array??
         if num_ty == FieldType::End {
-            return Err(Error::Eof {
+            return Err(Error::UnexpectedEof(UnexpectedEof {
+                #[cfg(feature = "error-context")]
                 at: self
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.current_index()),
-            });
+            }));
         }
 
         if let Some(ty) = desired
             && ty != num_ty
         {
-            return Err(Error::UnexpectedType {
+            return Err(Error::UnexpectedType(UnexpectedType {
                 expected: ty,
                 actual: num_ty,
+                #[cfg(feature = "error-context")]
                 at: self
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.current_index()),
-            });
+            }));
         }
 
         let (first_num_char, _) = self.peek_char_with_index()?;
         let num_str = &self.input[first_num_char..suffix_idx];
 
         // Skip over number and that pesky suffix if it exists
-        self.skip(suffix_idx + if num_ty != FieldType::Int { 1 } else { 0 })?;
-
-        println!("{num_str:?} of type {num_ty}");
+        self.skip(suffix_idx + usize::from(num_ty != FieldType::Int))?;
 
         match num_ty {
             FieldType::Byte => {
-                let parsed = num_str
-                    .parse::<i8>()
-                    .map_err(|error| Error::ParseIntError {
+                let parsed = num_str.parse::<i8>().map_err(|error| {
+                    Error::ParseIntError(ParseIntError {
                         error,
+                        #[cfg(feature = "error-context")]
                         at: self
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
+                        #[cfg(feature = "error-context")]
                         index: Some(self.current_index()),
-                    })?;
+                    })
+                })?;
                 visitor.visit_i8(parsed)
             }
             FieldType::Short => {
-                let parsed = num_str
-                    .parse::<i16>()
-                    .map_err(|error| Error::ParseIntError {
+                let parsed = num_str.parse::<i16>().map_err(|error| {
+                    Error::ParseIntError(ParseIntError {
                         error,
+                        #[cfg(feature = "error-context")]
                         at: self
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
+                        #[cfg(feature = "error-context")]
                         index: Some(self.current_index()),
-                    })?;
+                    })
+                })?;
                 visitor.visit_i16(parsed)
             }
             FieldType::Int => {
-                println!("num_str: {num_str:?}");
-
-                let parsed = num_str
-                    .parse::<i32>()
-                    .map_err(|error| Error::ParseIntError {
+                let parsed = num_str.parse::<i32>().map_err(|error| {
+                    Error::ParseIntError(ParseIntError {
                         error,
+                        #[cfg(feature = "error-context")]
                         at: self
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
+                        #[cfg(feature = "error-context")]
                         index: Some(self.current_index()),
-                    })?;
+                    })
+                })?;
                 visitor.visit_i32(parsed)
             }
             FieldType::Long => {
-                let parsed = num_str
-                    .parse::<i64>()
-                    .map_err(|error| Error::ParseIntError {
+                let parsed = num_str.parse::<i64>().map_err(|error| {
+                    Error::ParseIntError(ParseIntError {
                         error,
+                        #[cfg(feature = "error-context")]
                         at: self
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
+                        #[cfg(feature = "error-context")]
                         index: Some(self.current_index()),
-                    })?;
+                    })
+                })?;
                 visitor.visit_i64(parsed)
             }
             FieldType::Float => {
-                let parsed = num_str
-                    .parse::<f32>()
-                    .map_err(|error| Error::ParseFloatError {
+                let parsed = num_str.parse::<f32>().map_err(|error| {
+                    Error::ParseFloatError(ParseFloatError {
                         error,
+                        #[cfg(feature = "error-context")]
                         at: self
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
+                        #[cfg(feature = "error-context")]
                         index: Some(self.current_index()),
-                    })?;
+                    })
+                })?;
                 visitor.visit_f32(parsed)
             }
             FieldType::Double => {
-                let parsed = num_str
-                    .parse::<f64>()
-                    .map_err(|error| Error::ParseFloatError {
+                let parsed = num_str.parse::<f64>().map_err(|error| {
+                    Error::ParseFloatError(ParseFloatError {
                         error,
+                        #[cfg(feature = "error-context")]
                         at: self
                             .curr_key
                             .take()
                             .unwrap_or_else(|| String::from("unknown")),
+                        #[cfg(feature = "error-context")]
                         index: Some(self.current_index()),
-                    })?;
+                    })
+                })?;
                 visitor.visit_f64(parsed)
             }
             _ => unreachable!("Non-number field type {num_ty:?} encountered"),
@@ -340,17 +372,17 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
             '[' => self.deserialize_seq(visitor),
             '0'..='9' => self.parse_number(visitor, None),
             '"' => self.deserialize_string(visitor),
-            other => {
-                return Err(Error::ExpectedSymbol {
-                    found: other,
-                    expected: None,
-                    at: self
-                        .curr_key
-                        .take()
-                        .unwrap_or_else(|| String::from("unknown")),
-                    index: Some(self.current_index()),
-                });
-            }
+            other => Err(Error::UnexpectedSymbol(UnexpectedSymbol {
+                found: other,
+                expected: None,
+                #[cfg(feature = "error-context")]
+                at: self
+                    .curr_key
+                    .take()
+                    .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
+                index: Some(self.current_index()),
+            })),
         }
     }
 
@@ -358,16 +390,17 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
     where
         V: Visitor<'de>,
     {
-        let byte = self
-            .next_char()?
-            .to_digit(10)
-            .ok_or_else(|| Error::ExpectedInteger {
+        let byte = self.next_char()?.to_digit(10).ok_or_else(|| {
+            Error::ExpectedNumber(ExpectedNumber {
+                #[cfg(feature = "error-context")]
                 at: self
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.current_index()),
-            })?;
+            })
+        })?;
 
         visitor.visit_bool(byte == 1)
     }
@@ -450,28 +483,32 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "deserializing `char` is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]
             index: Some(self.current_index()),
-        })
+        }))
     }
 
     fn deserialize_str<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        Err(Error::Unsupported {
+        Err(Error::Unsupported(Unsupported {
             op: "deserializing string references is not supported",
+            #[cfg(feature = "error-context")]
             at: self
                 .curr_key
                 .take()
                 .unwrap_or_else(|| String::from("unknown")),
+            #[cfg(feature = "error-context")]
             index: Some(self.current_index()),
-        })
+        }))
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -480,7 +517,6 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'_> {
     {
         let v = self.parse_string()?.to_owned();
         if self.is_key {
-            println!("key: {v:?}");
             self.curr_key = Some(v.clone());
         }
 
@@ -629,30 +665,34 @@ impl<'de> de::MapAccess<'de> for MapDeserializer<'_, '_> {
     {
         let first_char = self.de.next_char()?;
         if self.first && first_char != '{' {
-            return Err(Error::ExpectedSymbol {
+            return Err(Error::UnexpectedSymbol(UnexpectedSymbol {
                 found: first_char,
                 expected: Some('{'),
+                #[cfg(feature = "error-context")]
                 at: self
                     .de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.de.current_index()),
-            });
+            }));
         } else if first_char == '}' {
             // Map finished
             return Ok(None);
         } else if !self.first && first_char != ',' {
-            return Err(Error::ExpectedSymbol {
+            return Err(Error::UnexpectedSymbol(UnexpectedSymbol {
                 found: first_char,
                 expected: Some(','),
+                #[cfg(feature = "error-context")]
                 at: self
                     .de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.de.current_index()),
-            });
+            }));
         }
 
         // Check if map is empty
@@ -667,16 +707,18 @@ impl<'de> de::MapAccess<'de> for MapDeserializer<'_, '_> {
 
         let colon = self.de.next_char()?;
         if colon != ':' {
-            return Err(Error::ExpectedSymbol {
+            return Err(Error::UnexpectedSymbol(UnexpectedSymbol {
                 found: colon,
                 expected: Some(':'),
+                #[cfg(feature = "error-context")]
                 at: self
                     .de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.de.current_index()),
-            });
+            }));
         }
 
         key
@@ -710,29 +752,33 @@ impl<'de> de::SeqAccess<'de> for ArrayDeserializer<'_, '_> {
     {
         let first_char = self.de.next_char()?;
         if self.first && first_char != '[' {
-            return Err(Error::ExpectedSymbol {
+            return Err(Error::UnexpectedSymbol(UnexpectedSymbol {
                 found: first_char,
                 expected: Some('['),
+                #[cfg(feature = "error-context")]
                 at: self
                     .de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.de.current_index()),
-            });
+            }));
         } else if first_char == ']' {
             return Ok(None);
         } else if !self.first && first_char != ',' {
-            return Err(Error::ExpectedSymbol {
+            return Err(Error::UnexpectedSymbol(UnexpectedSymbol {
                 found: first_char,
                 expected: Some(','),
+                #[cfg(feature = "error-context")]
                 at: self
                     .de
                     .curr_key
                     .take()
                     .unwrap_or_else(|| String::from("unknown")),
+                #[cfg(feature = "error-context")]
                 index: Some(self.de.current_index()),
-            });
+            }));
         }
 
         // Check whether the array is empty

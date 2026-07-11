@@ -16,7 +16,7 @@ mod tests {
         snbt::{de::Deserializer, ser::Serializer},
     };
 
-    const WHITESPACED_ALL: &'static str = r#"
+    const WHITESPACED_ALL: &str = r#"
         {
             float: 42f,
             "double 1": 42d,
