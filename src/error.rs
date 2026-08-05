@@ -61,7 +61,7 @@ impl TypeOutOfRange {
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
     feature = "error-context",
-    error("expected tag of type {expected}, found {actual} at field `{at}`)")
+    error("expected tag of type {expected}, found {actual} at field `{at}`")
 )]
 #[cfg_attr(
     not(feature = "error-context"),
@@ -230,7 +230,6 @@ impl UnexpectedEof {
 /// The document nested containers more deeply than [`MAX_DEPTH`] allows.
 ///
 /// [`MAX_DEPTH`]: crate::MAX_DEPTH
-#[cfg(any(feature = "nbt", feature = "snbt"))]
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
     feature = "error-context",
@@ -254,7 +253,6 @@ pub struct MaxDepthExceeded {
     pub(crate) index: Option<usize>,
 }
 
-#[cfg(any(feature = "nbt", feature = "snbt"))]
 impl MaxDepthExceeded {
     /// The nesting depth limit that was hit.
     #[inline]
@@ -403,9 +401,8 @@ impl StringTooLong {
 /// Unknown keys are rejected by default so that schema drift cannot silently
 /// discard data. Opt a struct out with `#[facet(nbtx::allow_unknown_fields)]`.
 ///
-/// Raised by both codecs — the binary one (`nbt`) and the textual one (`snbt`) —
-/// so it is available whenever either feature is on.
-#[cfg(any(feature = "nbt", feature = "snbt"))]
+/// Raised by every codec — the binary one (`nbt`), the textual one (`snbt`) and
+/// [`from_value`](crate::from_value) — so it is always available.
 #[derive(Error, Debug, Clone)]
 #[error(
     "unknown field `{field}` while deserializing `{container}` (add `#[facet(nbtx::allow_unknown_fields)]` to skip unknown keys)"
@@ -417,7 +414,6 @@ pub struct UnknownField {
     pub(crate) container: &'static str,
 }
 
-#[cfg(any(feature = "nbt", feature = "snbt"))]
 impl UnknownField {
     /// The compound key that did not match any field.
     #[inline]
@@ -623,9 +619,8 @@ pub enum Error {
     UnexpectedEof(UnexpectedEof),
     /// The document nested containers deeper than [`MAX_DEPTH`](crate::MAX_DEPTH).
     ///
-    /// Raised by both codecs — the binary one (`nbt`) and the textual one
-    /// (`snbt`), on read and on write.
-    #[cfg(any(feature = "nbt", feature = "snbt"))]
+    /// Raised by every codec — the binary one (`nbt`), the textual one (`snbt`)
+    /// and the [`Value`](crate::Value) conversion — on read and on write.
     #[error(transparent)]
     MaxDepthExceeded(MaxDepthExceeded),
     /// A varint did not terminate within its permitted byte count.
@@ -638,8 +633,7 @@ pub enum Error {
     StringTooLong(StringTooLong),
     /// A compound key had no matching struct field.
     ///
-    /// Raised by both codecs (binary and SNBT).
-    #[cfg(any(feature = "nbt", feature = "snbt"))]
+    /// Raised by every codec (binary, SNBT and [`from_value`](crate::from_value)).
     #[error(transparent)]
     UnknownField(UnknownField),
     #[cfg(feature = "snbt")]

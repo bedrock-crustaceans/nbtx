@@ -11,7 +11,7 @@ A high-performance, pure-Rust implementation of the **Named Binary Tag (NBT)** f
 
 * **Bedrock Optimized:** Full support for Little Endian and Varint encoding used in Bedrock.
 * **Memory Efficient:** Optimized for low-allocation parsing and high-speed serialization.
-* **Unstructed Data**: Support for NBT data with no predefined structure via `nbtx::Value`.
+* **Unstructed Data**: Support for NBT data with no predefined structure via `nbtx::Value`, and `nbtx::to_value`/`nbtx::from_value` to convert between it and your own types without re-encoding.
 * **Facet Reflection:** Map between Rust structs and NBT with a single `#[derive(nbtx::Facet)]`.
 * **Strictly Typed:** Safe handling of Compound, List, and Byte Array tags.
 
@@ -46,6 +46,7 @@ cargo run --example snbt --features snbt
 | [`structs`](examples/structs.rs) | Which Rust type maps to which NBT tag; `Option`, nesting, renaming, map fields, and the mapping's limits. |
 | [`endianness`](examples/endianness.rs) | The three wire variants — big-endian, little-endian, varint — and when to use which. |
 | [`value`](examples/value.rs) | The dynamic `Value` tree: building NBT without a schema, the `as_*`/`is_*`/`into_*` accessors, key order. |
+| [`value_conversion`](examples/value_conversion.rs) | `to_value`/`from_value`: struct ⇄ `Value` directly, with no bytes in between (needs no features). |
 | [`named_root`](examples/named_root.rs) | The document root name and the `Named<T>` wrapper that preserves it. |
 | [`non_utf8`](examples/non_utf8.rs) | NBT strings are raw bytes; `bstr::BString` fields keep them losslessly. |
 | [`unknown_fields`](examples/unknown_fields.rs) | Unknown compound keys are an error by default, plus the `#[facet(nbtx::allow_unknown_fields)]` opt-out. |

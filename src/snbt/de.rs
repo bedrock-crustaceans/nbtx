@@ -18,9 +18,9 @@ use facet::Facet;
 use facet_core::{Def, ScalarType, Shape, Type, UserType};
 use facet_reflect::Partial;
 
-use crate::error::{
-    ParseFloatError, ParseIntError, UnexpectedEof, UnexpectedSymbol, UnknownField, Unsupported,
-};
+use crate::error::{ParseFloatError, ParseIntError, UnexpectedEof, UnexpectedSymbol};
+// Shared with the binary codec and the `Value` conversion; see `crate::reflect`.
+use crate::reflect::{is_bstring, is_value, reflect_err, unknown_field, unsupported};
 use crate::{Error, Value, check_depth};
 
 type Part<'f> = Partial<'f, true>;
@@ -35,41 +35,6 @@ const DELIMS: &[char] = &[' ', '\n', '\t', '\r', ',', ':', '{', '}', '[', ']', '
 enum Nested {
     Compound,
     List,
-}
-
-fn reflect_err(e: impl std::fmt::Display) -> Error {
-    Error::Other(e.to_string())
-}
-
-fn unsupported(op: &'static str) -> Error {
-    Error::Unsupported(Unsupported {
-        op,
-        #[cfg(feature = "error-context")]
-        at: String::from("unknown"),
-        #[cfg(feature = "error-context")]
-        index: None,
-    })
-}
-
-fn is_value(shape: &Shape) -> bool {
-    shape.id == <Value as Facet>::SHAPE.id
-}
-
-/// Returns `true` if the shape is `bstr::BString`/`BStr` (an NBT *string* stored
-/// as raw bytes). They reflect as a `Def::List<u8>`, so without this check they
-/// would take the byte-array path; the binary codec applies the same rule
-/// (`nbt::de::is_bstring`), and the two must agree.
-fn is_bstring(shape: &Shape) -> bool {
-    matches!(shape.type_identifier, "BString" | "BStr")
-}
-
-/// Builds the `unknown compound key` error for `shape`'s struct, matching
-/// `nbt::de::unknown_field`.
-fn unknown_field(shape: &Shape, key: &str) -> Error {
-    Error::UnknownField(UnknownField {
-        field: key.to_owned(),
-        container: shape.type_identifier,
-    })
 }
 
 fn eof() -> Error {
@@ -681,7 +646,7 @@ impl<'a> Deserializer<'a> {
                 // Opted out of strict decoding: parse and discard the value.
                 let _ = self.parse_value(depth + 1)?;
             } else {
-                return Err(unknown_field(shape, &key));
+                return Err(unknown_field(shape, key.as_bytes()));
             }
 
             match self.peek()? {

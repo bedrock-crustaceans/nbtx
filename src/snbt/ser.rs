@@ -13,38 +13,14 @@
 
 use bstr::ByteSlice;
 use facet::Facet;
-use facet_core::{Def, ScalarType, Shape, Type, UserType};
+use facet_core::{Def, ScalarType, Type, UserType};
 use facet_reflect::Peek;
 
-use crate::error::Unsupported;
+// A `BString`/`BStr` renders as a quoted string rather than a `[B;..]`
+// byte-array literal, and a `Value` is detected by shape id: the same rules the
+// binary codec applies, shared from `crate::reflect` so the two cannot drift.
+use crate::reflect::{is_bstring, is_value, reflect_err, unsupported};
 use crate::{Error, Value, check_depth};
-
-fn reflect_err(e: impl std::fmt::Display) -> Error {
-    Error::Other(e.to_string())
-}
-
-fn unsupported(op: &'static str) -> Error {
-    Error::Unsupported(Unsupported {
-        op,
-        #[cfg(feature = "error-context")]
-        at: String::from("unknown"),
-        #[cfg(feature = "error-context")]
-        index: None,
-    })
-}
-
-fn is_value(shape: &Shape) -> bool {
-    shape.id == <Value as Facet>::SHAPE.id
-}
-
-/// Returns `true` if the shape is `bstr::BString`/`BStr`. These reflect as a
-/// `Def::List<u8>`, but semantically hold an NBT *string*, so they render as a
-/// quoted string rather than a `[B;..]` byte-array literal — the same rule
-/// `nbt::ser::is_bstring` applies on the binary side, mirrored here so both
-/// codecs spell a `BString` field the same way.
-fn is_bstring(shape: &Shape) -> bool {
-    matches!(shape.type_identifier, "BString" | "BStr")
-}
 
 /// Serializes `value` into an SNBT string.
 pub fn to_string<'f, T: Facet<'f> + ?Sized>(value: &'f T) -> Result<String, Error> {

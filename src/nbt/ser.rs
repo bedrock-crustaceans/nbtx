@@ -22,37 +22,14 @@ use facet::Facet;
 use facet_core::{Def, ScalarType, Shape, Type, UserType};
 use facet_reflect::Peek;
 
-use crate::error::Unsupported;
 use crate::named;
 use crate::nbt::io;
+// The type→tag convention and the error constructors are shared with the SNBT
+// codec and the `Value` conversion, so they live in `crate::reflect`.
+use crate::reflect::{
+    is_bstring, is_value, list_tag, reflect_err, scalar_tag, unsupported, unwrap_option, value_tag,
+};
 use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, Value, VarintEndian};
-
-fn reflect_err(e: impl std::fmt::Display) -> Error {
-    Error::Other(e.to_string())
-}
-
-fn unsupported(op: &'static str) -> Error {
-    Error::Unsupported(Unsupported {
-        op,
-        #[cfg(feature = "error-context")]
-        at: String::from("unknown"),
-        #[cfg(feature = "error-context")]
-        index: None,
-    })
-}
-
-/// Returns `true` if the peek's shape is the dynamic [`Value`] type.
-fn is_value(shape: &Shape) -> bool {
-    shape.id == <Value as Facet>::SHAPE.id
-}
-
-/// Returns `true` if the shape is `bstr::BString`/`BStr`. These reflect as a
-/// `Def::List<u8>`, but semantically hold an NBT *string* (raw, possibly
-/// non-UTF-8 bytes), so they must map to the `String` tag rather than
-/// `ByteArray`.
-fn is_bstring(shape: &Shape) -> bool {
-    matches!(shape.type_identifier, "BString" | "BStr")
-}
 
 /// Maps a static element/field shape to an NBT tag, without a concrete value.
 ///
@@ -82,60 +59,12 @@ fn tag_of_shape(shape: &Shape) -> Option<FieldType> {
     }
 }
 
-fn scalar_tag(scalar: ScalarType) -> Option<FieldType> {
-    Some(match scalar {
-        // A bare `u8` is a `Byte` tag, matching `nbt::de::read_scalar` (which
-        // reads one back with `cast_unsigned`) and both halves of the SNBT
-        // codec. Only *bare* scalars: a `Vec<u8>`/`[u8; N]` is a `ByteArray`,
-        // decided by `list_tag` on the element shape, not here.
-        ScalarType::Bool | ScalarType::I8 | ScalarType::U8 => FieldType::Byte,
-        ScalarType::I16 => FieldType::Short,
-        ScalarType::I32 => FieldType::Int,
-        ScalarType::I64 => FieldType::Long,
-        ScalarType::F32 => FieldType::Float,
-        ScalarType::F64 => FieldType::Double,
-        ScalarType::Str | ScalarType::String | ScalarType::CowStr => FieldType::String,
-        _ => return None,
-    })
-}
-
-/// Maps a list/array element shape to the tag of the *containing* sequence.
-fn list_tag(elem: &Shape) -> FieldType {
-    let id = elem.id;
-    if id == <u8 as Facet>::SHAPE.id {
-        FieldType::ByteArray
-    } else if id == <i32 as Facet>::SHAPE.id {
-        FieldType::IntArray
-    } else if id == <i64 as Facet>::SHAPE.id {
-        FieldType::LongArray
-    } else {
-        FieldType::List
-    }
-}
-
-/// If `peek` is an `Option`, returns `None` for `None` (a field to skip) and the
-/// inner peek for `Some`. Non-option peeks are returned unchanged.
-fn unwrap_option<'m, 'f>(peek: Peek<'m, 'f>) -> Result<Option<Peek<'m, 'f>>, Error> {
-    if let Def::Option(_) = peek.shape().def {
-        let opt = peek.into_option().map_err(reflect_err)?;
-        Ok(opt.value())
-    } else {
-        Ok(Some(peek))
-    }
-}
-
 /// Determines the NBT tag for a concrete value.
 fn tag_of(peek: Peek) -> Result<FieldType, Error> {
     let shape = peek.shape();
     if is_value(shape) {
         let v: &Value = peek.get::<Value>().map_err(reflect_err)?;
-        return FieldType::try_from(
-            v.discriminant(),
-            #[cfg(feature = "error-context")]
-            &mut None,
-            #[cfg(feature = "error-context")]
-            None,
-        );
+        return Ok(value_tag(v));
     }
     if is_bstring(shape) {
         return Ok(FieldType::String);

@@ -89,10 +89,10 @@ facet::define_attr_grammar! {
 
 /// Builds the "nesting too deep" error. See [`MAX_DEPTH`].
 ///
-/// Shared by both codecs, so it lives here rather than in `nbt::io`: the SNBT
-/// parser and writer enforce the same bound as the binary ones and must be
-/// buildable with `--no-default-features --features snbt`.
-#[cfg(any(feature = "nbt", feature = "snbt"))]
+/// Shared by every codec, so it lives here rather than in `nbt::io`: the SNBT
+/// parser/writer and the [`to_value`]/[`from_value`] conversion enforce the same
+/// bound as the binary ones, and the conversion is available with no features at
+/// all — hence no `#[cfg]` here.
 pub(crate) fn max_depth_exceeded() -> Error {
     Error::MaxDepthExceeded(crate::error::MaxDepthExceeded {
         max: MAX_DEPTH,
@@ -105,7 +105,6 @@ pub(crate) fn max_depth_exceeded() -> Error {
 
 /// Errors if `depth` (the number of already-entered containers) has reached
 /// [`MAX_DEPTH`]. Call this *before* recursing into a nested container.
-#[cfg(any(feature = "nbt", feature = "snbt"))]
 #[inline]
 pub(crate) fn check_depth(depth: usize) -> std::result::Result<(), Error> {
     if depth >= MAX_DEPTH {
@@ -115,13 +114,16 @@ pub(crate) fn check_depth(depth: usize) -> std::result::Result<(), Error> {
 }
 
 /// Returns `true` if `shape` carries the `#[facet(nbtx::<key>)]` marker.
-#[allow(dead_code)]
 pub(crate) fn has_nbtx_attr(shape: &facet_core::Shape, key: &str) -> bool {
     shape
         .attributes
         .iter()
         .any(|a| a.ns == Some("nbtx") && a.key == key)
 }
+
+// Feature-independent: converting between a typed value and the dynamic `Value`
+// tree never touches the wire format, so it is available even with no features.
+pub use crate::convert::{from_value, to_value};
 
 #[cfg(feature = "nbt")]
 pub use crate::nbt::de::{from_be_bytes, from_bytes, from_le_bytes, from_varint_bytes};
@@ -134,9 +136,11 @@ pub use crate::nbt::ser::{
 #[cfg(feature = "snbt")]
 pub use snbt::{from_string, to_string};
 
+mod convert;
 mod error;
 mod field_type;
 mod named;
+mod reflect;
 mod value;
 mod variant;
 

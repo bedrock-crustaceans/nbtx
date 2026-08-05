@@ -34,7 +34,12 @@ indexmap = { version = "2.2", optional = true }
 
 # Every example exercises the binary NBT codec, so they all require the `nbt`
 # feature (skipped under `--no-default-features`); `snbt` additionally needs the
-# textual codec.
+# textual codec. The one exception is `value_conversion`: `to_value`/`from_value`
+# never touch the wire format, so it builds and runs with no features at all and
+# carries no `required-features`.
+[[example]]
+name = "value_conversion"
+
 [[example]]
 name = "hello_world"
 required-features = ["nbt"]

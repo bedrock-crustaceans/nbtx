@@ -17,55 +17,16 @@ use facet::Facet;
 use facet_core::{Def, ScalarType, Shape, Type, UserType};
 use facet_reflect::Partial;
 
-use crate::error::{UnexpectedEnd, UnexpectedType, UnknownField, Unsupported};
+use crate::error::UnexpectedEnd;
 use crate::named;
 use crate::nbt::io;
-use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, Value, VarintEndian};
+// Shared with the SNBT codec and the `Value` conversion; see `crate::reflect`.
+use crate::reflect::{
+    is_bstring, is_value, reflect_err, unexpected_type, unknown_field, unsupported,
+};
+use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, VarintEndian};
 
 type Part<'f> = Partial<'f, true>;
-
-fn reflect_err(e: impl std::fmt::Display) -> Error {
-    Error::Other(e.to_string())
-}
-
-fn unsupported(op: &'static str) -> Error {
-    Error::Unsupported(Unsupported {
-        op,
-        #[cfg(feature = "error-context")]
-        at: String::from("unknown"),
-        #[cfg(feature = "error-context")]
-        index: None,
-    })
-}
-
-fn unexpected_type(expected: FieldType, actual: FieldType) -> Error {
-    Error::UnexpectedType(UnexpectedType {
-        expected,
-        actual,
-        #[cfg(feature = "error-context")]
-        at: String::from("unknown"),
-        #[cfg(feature = "error-context")]
-        index: None,
-    })
-}
-
-fn is_value(shape: &Shape) -> bool {
-    shape.id == <Value as Facet>::SHAPE.id
-}
-
-/// Returns `true` if the shape is `bstr::BString`/`BStr` (an NBT `String` stored
-/// as raw, possibly non-UTF-8 bytes rather than a UTF-8-validated [`String`]).
-fn is_bstring(shape: &Shape) -> bool {
-    matches!(shape.type_identifier, "BString" | "BStr")
-}
-
-/// Builds the `unknown compound key` error for `shape`'s struct.
-fn unknown_field(shape: &Shape, key: &[u8]) -> Error {
-    Error::UnknownField(UnknownField {
-        field: bstr::BStr::new(key).to_string(),
-        container: shape.type_identifier,
-    })
-}
 
 /// Reads the payload of NBT tag `tag` into the current partial frame, whose
 /// target type is described by `shape`.
