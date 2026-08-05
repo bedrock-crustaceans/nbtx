@@ -1,19 +1,47 @@
-use std::collections::BTreeMap;
-use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use bstr::{BString, ByteSlice};
-use serde::de::{MapAccess, SeqAccess, Visitor};
-use serde::ser::{SerializeMap, SerializeSeq};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use bstr::BString;
+use facet::Facet;
 
-use crate::nbt::ser::RAW_STRING_TOKEN;
+/// The map type backing [`Value::Compound`].
+///
+/// An order-preserving [`indexmap::IndexMap`] with the default `preserve_order`
+/// feature (so on-disk key order round-trips), or a sorted
+/// [`BTreeMap`](std::collections::BTreeMap) with `--no-default-features`.
+#[cfg(feature = "preserve_order")]
+pub type Compound = indexmap::IndexMap<BString, Value>;
+/// The map type backing [`Value::Compound`] (sorted `BTreeMap` variant; enable
+/// the `preserve_order` feature for order preservation).
+#[cfg(not(feature = "preserve_order"))]
+pub type Compound = std::collections::BTreeMap<BString, Value>;
 
 /// General NBT value type that can represent any value.
 ///
 /// In case the structure of some piece of NBT data is not known, this
-/// type can be used to deserialise it.
-#[derive(Debug, Clone)]
+/// type can be used to deserialise it. Unlike a `#[derive(Facet)]` struct,
+/// a [`Value`] preserves the exact NBT tag of every node (so `ByteArray`,
+/// `IntArray`, `LongArray` and `List` stay distinct) and stores strings as
+/// [`bstr::BString`], so non-UTF-8 payloads round-trip losslessly.
+///
+/// # Equality
+///
+/// `Value` is `Eq + Hash`, so a whole document can key a `HashMap`/`HashSet`.
+/// Its float payloads use a *total* equality — IEEE-754's, plus every `NaN`
+/// equal to every other `NaN` — because `Eq` needs a reflexive `==` and
+/// `f32`/`f64` do not have one. `-0.0 == 0.0` still holds, and `Hash`
+/// normalises both cases so equal values always hash alike. Comparing `NaN`
+/// *payload bits* therefore needs `to_bits()`, not `==`.
+///
+/// # Facet representation
+///
+/// `Value` derives [`Facet`] so that it can be used as a type argument to the
+/// public (de)serialisation functions (e.g. `to_be_bytes::<Value>`). Its
+/// [`bstr::BString`] and [`Compound`] map payloads reflect directly (facet's
+/// `bstr`/`indexmap` support), so no proxy types are needed. The NBT and SNBT
+/// codecs still detect a `Value` by its shape id and read/write the real Rust
+/// value directly, preserving full `BString` fidelity and key order.
+#[derive(Debug, Clone, Facet)]
+#[repr(u8)]
 pub enum Value {
     /// A signed byte.
     Byte(i8),
@@ -31,16 +59,13 @@ pub enum Value {
     ///
     /// Deserialising an NBT `ByteArray` tag into a [`Value`] yields this
     /// variant, and it re-serialises byte-for-byte as a `ByteArray` tag for all
-    /// three endianness variants. When defining your own types, use
-    /// [`NbtByteArray`](crate::NbtByteArray) or a
-    /// [`serde_bytes`](https://crates.io/crates/serde_bytes)-style field to map
-    /// to the `ByteArray` tag; a plain `Vec<i8>` serialises as a `List` of
-    /// `Byte`s instead.
+    /// three endianness variants. In a `#[derive(Facet)]` struct, a `Vec<u8>`
+    /// field maps to the `ByteArray` tag; any other `Vec<T>` maps to a `List`.
     ByteArray(Vec<u8>),
     /// A string of raw bytes.
     ///
-    /// NBT strings are not guaranteed to be valid UTF-8 (Java uses MUTF-8 and
-    /// Bedrock allows arbitrary bytes), so the raw bytes are stored in a
+    /// NBT strings are not guaranteed to be valid UTF-8 (Bedrock allows
+    /// arbitrary bytes in a string tag), so the raw bytes are stored in a
     /// [`bstr::BString`] rather than a [`String`]. Construction from string
     /// literals still works ergonomically, e.g. `Value::String("abc".into())`.
     String(BString),
@@ -49,16 +74,25 @@ pub enum Value {
     /// Key-value map.
     ///
     /// Keys are stored as [`bstr::BString`] because NBT string keys are not
-    /// guaranteed to be valid UTF-8. A [`BTreeMap`] is used so that the entries
-    /// have a deterministic ordering.
-    Compound(BTreeMap<BString, Value>),
+    /// guaranteed to be valid UTF-8. The backing map is a [`Compound`] (an
+    /// order-preserving `IndexMap` by default; see the `preserve_order` feature).
+    Compound(Compound),
     /// An array of integers.
+    ///
+    /// Tag 11. The highest tag universally supported: NBT readers written
+    /// against the original tag set stop here.
     IntArray(Vec<i32>),
     /// An array of longs.
+    ///
+    /// Tag 12. Valid Bedrock NBT, but it postdates the original tag set, so
+    /// older or Java-Edition-shaped readers cap at `IntArray` (11) and reject it
+    /// as an unknown tag type. Producing a `LongArray` is therefore fine for
+    /// Bedrock, but will not round-trip through every NBT tool.
     LongArray(Vec<i64>),
 }
 
 impl Value {
+    /// Returns the NBT tag discriminant (1-12) for this value.
     #[inline]
     #[must_use]
     pub fn discriminant(&self) -> u8 {
@@ -127,7 +161,7 @@ impl Value {
         Double = f64,
         String = BString,
         List = Vec<Self>,
-        Compound = BTreeMap<BString, Self>,
+        Compound = Compound,
         ByteArray = Vec<u8>,
         IntArray = Vec<i32>,
         LongArray = Vec<i64>
@@ -155,6 +189,26 @@ impl From<&str> for Value {
     }
 }
 
+/// Total equality for the float payloads: IEEE-754 equality, plus every `NaN`
+/// equal to every other `NaN`.
+///
+/// This is what makes [`Value`] `Eq` (and so usable as a `HashMap`/`HashSet`
+/// key) despite holding `f32`/`f64`, whose own `==` is not reflexive. It is a
+/// genuine equivalence relation: reflexive because a `NaN` now equals itself,
+/// symmetric by construction, and transitive because the `NaN`s form one class
+/// and the ordinary IEEE classes are untouched.
+///
+/// `-0.0 == 0.0` is *kept* — that is IEEE's answer, it is what this crate's
+/// `PartialEq` has always said, and [`Value`]'s [`Hash`] already normalises the
+/// two to the same bytes so that a key stored as `-0.0` is still found by
+/// `0.0`. `Hash` normalises `NaN` payloads the same way, so the two impls agree
+/// on every input.
+#[inline]
+fn float_eq<T: Copy + PartialEq + Into<f64>>(lhs: T, rhs: T) -> bool {
+    let (l, r) = (lhs.into(), rhs.into());
+    l == r || (l.is_nan() && r.is_nan())
+}
+
 impl PartialEq<Value> for Value {
     #[inline]
     fn eq(&self, rhs: &Value) -> bool {
@@ -163,8 +217,8 @@ impl PartialEq<Value> for Value {
             Value::Short(lhs) => rhs.as_short() == Some(lhs),
             Value::Int(lhs) => rhs.as_int() == Some(lhs),
             Value::Long(lhs) => rhs.as_long() == Some(lhs),
-            Value::Float(lhs) => rhs.as_float() == Some(lhs),
-            Value::Double(lhs) => rhs.as_double() == Some(lhs),
+            Value::Float(lhs) => rhs.as_float().is_some_and(|rhs| float_eq(*lhs, *rhs)),
+            Value::Double(lhs) => rhs.as_double().is_some_and(|rhs| float_eq(*lhs, *rhs)),
             Value::ByteArray(lhs) => rhs.as_byte_array().is_some_and(|rhs| lhs.as_slice() == rhs),
             Value::String(lhs) => rhs.as_string() == Some(lhs),
             Value::List(lhs) => rhs.as_list() == Some(lhs),
@@ -175,152 +229,104 @@ impl PartialEq<Value> for Value {
     }
 }
 
-impl PartialEq<i8> for Value {
-    #[inline]
-    fn eq(&self, rhs: &i8) -> bool {
-        self.as_byte() == Some(rhs)
+macro_rules! impl_scalar_eq {
+    ($($ty: ty => $as: ident),+) => {
+        $(
+            impl PartialEq<$ty> for Value {
+                #[inline]
+                fn eq(&self, rhs: &$ty) -> bool {
+                    self.$as() == Some(rhs)
+                }
+            }
+            impl PartialEq<$ty> for &Value {
+                #[inline]
+                fn eq(&self, rhs: &$ty) -> bool {
+                    self.$as() == Some(rhs)
+                }
+            }
+            impl PartialEq<$ty> for &mut Value {
+                #[inline]
+                fn eq(&self, rhs: &$ty) -> bool {
+                    self.$as() == Some(rhs)
+                }
+            }
+        )+
     }
 }
 
-impl PartialEq<i8> for &Value {
-    #[inline]
-    fn eq(&self, rhs: &i8) -> bool {
-        self.as_byte() == Some(rhs)
+impl_scalar_eq!(
+    i8 => as_byte,
+    i16 => as_short,
+    i32 => as_int,
+    i64 => as_long
+);
+
+/// The float comparisons use the same total equality as `Value == Value` (see
+/// [`float_eq`]), so `Value::Double(f64::NAN) == f64::NAN` holds. Comparing a
+/// `Value` follows `Value`'s equality model whichever side the number is on;
+/// having `v == other_value` and `v == raw_float` disagree about `NaN` would be
+/// the more surprising rule.
+macro_rules! impl_float_eq {
+    ($($ty: ty => $as: ident),+) => {
+        $(
+            impl PartialEq<$ty> for Value {
+                #[inline]
+                fn eq(&self, rhs: &$ty) -> bool {
+                    self.$as().is_some_and(|lhs| float_eq(*lhs, *rhs))
+                }
+            }
+            impl PartialEq<$ty> for &Value {
+                #[inline]
+                fn eq(&self, rhs: &$ty) -> bool {
+                    self.$as().is_some_and(|lhs| float_eq(*lhs, *rhs))
+                }
+            }
+            impl PartialEq<$ty> for &mut Value {
+                #[inline]
+                fn eq(&self, rhs: &$ty) -> bool {
+                    self.$as().is_some_and(|lhs| float_eq(*lhs, *rhs))
+                }
+            }
+        )+
     }
 }
 
-impl PartialEq<i8> for &mut Value {
-    #[inline]
-    fn eq(&self, rhs: &i8) -> bool {
-        self.as_byte() == Some(rhs)
+impl_float_eq!(
+    f32 => as_float,
+    f64 => as_double
+);
+
+macro_rules! impl_slice_eq {
+    ($($ty: ty => $as: ident),+) => {
+        $(
+            impl PartialEq<$ty> for Value {
+                #[inline]
+                fn eq(&self, rhs: &$ty) -> bool {
+                    self.$as().is_some_and(|lhs| lhs == rhs)
+                }
+            }
+            impl PartialEq<$ty> for &Value {
+                #[inline]
+                fn eq(&self, rhs: &$ty) -> bool {
+                    self.$as().is_some_and(|lhs| lhs == rhs)
+                }
+            }
+            impl PartialEq<$ty> for &mut Value {
+                #[inline]
+                fn eq(&self, rhs: &$ty) -> bool {
+                    self.$as().is_some_and(|lhs| lhs == rhs)
+                }
+            }
+        )+
     }
 }
 
-impl PartialEq<i16> for Value {
-    #[inline]
-    fn eq(&self, rhs: &i16) -> bool {
-        self.as_short() == Some(rhs)
-    }
-}
-
-impl PartialEq<i16> for &Value {
-    #[inline]
-    fn eq(&self, rhs: &i16) -> bool {
-        self.as_short() == Some(rhs)
-    }
-}
-
-impl PartialEq<i16> for &mut Value {
-    #[inline]
-    fn eq(&self, rhs: &i16) -> bool {
-        self.as_short() == Some(rhs)
-    }
-}
-
-impl PartialEq<i32> for Value {
-    #[inline]
-    fn eq(&self, rhs: &i32) -> bool {
-        self.as_int() == Some(rhs)
-    }
-}
-
-impl PartialEq<i32> for &Value {
-    #[inline]
-    fn eq(&self, rhs: &i32) -> bool {
-        self.as_int() == Some(rhs)
-    }
-}
-
-impl PartialEq<i32> for &mut Value {
-    #[inline]
-    fn eq(&self, rhs: &i32) -> bool {
-        self.as_int() == Some(rhs)
-    }
-}
-
-impl PartialEq<i64> for Value {
-    #[inline]
-    fn eq(&self, rhs: &i64) -> bool {
-        self.as_long() == Some(rhs)
-    }
-}
-
-impl PartialEq<i64> for &Value {
-    #[inline]
-    fn eq(&self, rhs: &i64) -> bool {
-        self.as_long() == Some(rhs)
-    }
-}
-
-impl PartialEq<i64> for &mut Value {
-    #[inline]
-    fn eq(&self, rhs: &i64) -> bool {
-        self.as_long() == Some(rhs)
-    }
-}
-
-impl PartialEq<f32> for Value {
-    #[inline]
-    fn eq(&self, rhs: &f32) -> bool {
-        self.as_float() == Some(rhs)
-    }
-}
-
-impl PartialEq<f32> for &Value {
-    #[inline]
-    fn eq(&self, rhs: &f32) -> bool {
-        self.as_float() == Some(rhs)
-    }
-}
-
-impl PartialEq<f32> for &mut Value {
-    #[inline]
-    fn eq(&self, rhs: &f32) -> bool {
-        self.as_float() == Some(rhs)
-    }
-}
-
-impl PartialEq<f64> for Value {
-    #[inline]
-    fn eq(&self, rhs: &f64) -> bool {
-        self.as_double() == Some(rhs)
-    }
-}
-
-impl PartialEq<f64> for &Value {
-    #[inline]
-    fn eq(&self, rhs: &f64) -> bool {
-        self.as_double() == Some(rhs)
-    }
-}
-
-impl PartialEq<f64> for &mut Value {
-    #[inline]
-    fn eq(&self, rhs: &f64) -> bool {
-        self.as_double() == Some(rhs)
-    }
-}
-
-impl PartialEq<&[u8]> for Value {
-    #[inline]
-    fn eq(&self, rhs: &&[u8]) -> bool {
-        self.as_byte_array().is_some_and(|lhs| lhs == rhs)
-    }
-}
-
-impl PartialEq<&[u8]> for &Value {
-    #[inline]
-    fn eq(&self, rhs: &&[u8]) -> bool {
-        self.as_byte_array().is_some_and(|lhs| lhs == rhs)
-    }
-}
-
-impl PartialEq<&[u8]> for &mut Value {
-    #[inline]
-    fn eq(&self, rhs: &&[u8]) -> bool {
-        self.as_byte_array().is_some_and(|lhs| lhs == rhs)
-    }
-}
+impl_slice_eq!(
+    &[u8] => as_byte_array,
+    &[Value] => as_list,
+    &[i32] => as_int_array,
+    &[i64] => as_long_array
+);
 
 impl PartialEq<&str> for Value {
     #[inline]
@@ -346,89 +352,33 @@ impl PartialEq<&str> for &mut Value {
     }
 }
 
-impl PartialEq<&[Value]> for Value {
+impl PartialEq<Compound> for Value {
     #[inline]
-    fn eq(&self, rhs: &&[Value]) -> bool {
-        self.as_list().is_some_and(|lhs| lhs == rhs)
-    }
-}
-
-impl PartialEq<&[Value]> for &Value {
-    #[inline]
-    fn eq(&self, rhs: &&[Value]) -> bool {
-        self.as_list().is_some_and(|lhs| lhs == rhs)
-    }
-}
-
-impl PartialEq<&[Value]> for &mut Value {
-    #[inline]
-    fn eq(&self, rhs: &&[Value]) -> bool {
-        self.as_list().is_some_and(|lhs| lhs == rhs)
-    }
-}
-
-impl PartialEq<BTreeMap<BString, Value>> for Value {
-    #[inline]
-    fn eq(&self, rhs: &BTreeMap<BString, Value>) -> bool {
+    fn eq(&self, rhs: &Compound) -> bool {
         self.as_compound() == Some(rhs)
     }
 }
 
-impl PartialEq<BTreeMap<BString, Value>> for &Value {
+impl PartialEq<Compound> for &Value {
     #[inline]
-    fn eq(&self, rhs: &BTreeMap<BString, Value>) -> bool {
+    fn eq(&self, rhs: &Compound) -> bool {
         self.as_compound() == Some(rhs)
     }
 }
 
-impl PartialEq<BTreeMap<BString, Value>> for &mut Value {
+impl PartialEq<Compound> for &mut Value {
     #[inline]
-    fn eq(&self, rhs: &BTreeMap<BString, Value>) -> bool {
+    fn eq(&self, rhs: &Compound) -> bool {
         self.as_compound() == Some(rhs)
     }
 }
 
-impl PartialEq<&[i32]> for Value {
-    #[inline]
-    fn eq(&self, rhs: &&[i32]) -> bool {
-        self.as_int_array().is_some_and(|lhs| lhs == rhs)
-    }
-}
-
-impl PartialEq<&[i32]> for &Value {
-    #[inline]
-    fn eq(&self, rhs: &&[i32]) -> bool {
-        self.as_int_array().is_some_and(|lhs| lhs == rhs)
-    }
-}
-
-impl PartialEq<&[i32]> for &mut Value {
-    #[inline]
-    fn eq(&self, rhs: &&[i32]) -> bool {
-        self.as_int_array().is_some_and(|lhs| lhs == rhs)
-    }
-}
-
-impl PartialEq<&[i64]> for Value {
-    #[inline]
-    fn eq(&self, rhs: &&[i64]) -> bool {
-        self.as_long_array().is_some_and(|lhs| lhs == rhs)
-    }
-}
-
-impl PartialEq<&[i64]> for &Value {
-    #[inline]
-    fn eq(&self, rhs: &&[i64]) -> bool {
-        self.as_long_array().is_some_and(|lhs| lhs == rhs)
-    }
-}
-
-impl PartialEq<&[i64]> for &mut Value {
-    #[inline]
-    fn eq(&self, rhs: &&[i64]) -> bool {
-        self.as_long_array().is_some_and(|lhs| lhs == rhs)
-    }
-}
+/// `Value`'s equality is total (see the `float_eq` helper), so it is `Eq` as well as
+/// `PartialEq` and can key a `HashMap`/`HashSet` or sit in a `HashSet`-backed
+/// set of documents. The two float rules that make this sound are that every
+/// `NaN` equals every other `NaN` and that `-0.0 == 0.0`; [`Hash`] normalises
+/// both cases to the same bytes, so equal values always hash alike.
+impl Eq for Value {}
 
 impl Hash for Value {
     fn hash<H>(&self, state: &mut H)
@@ -441,25 +391,31 @@ impl Hash for Value {
             Value::Int(v) => state.write_i32(*v),
             Value::Long(v) => state.write_i64(*v),
             Value::String(v) => state.write(v.as_slice()),
+            // `f32`/`f64` are not `Hash`, so hash their bytes — but only after
+            // collapsing the two cases where equal floats have different bit
+            // patterns, or a `Value` used as a map key would go missing:
+            // `-0.0 == 0.0`, and every `NaN` equals every other `NaN` under
+            // `float_eq`, whatever payload it carries.
             Value::Float(v) => {
-                // f32 does not implement Hash, so simply hash the byte representation
-                // IEEE floats have + 0 and - 0, which are the same value but have different byte representations
-                let bytes = if *v == (-0_f32) {
-                    0_f32.to_le_bytes()
+                let normalized = if v.is_nan() {
+                    f32::NAN
+                } else if *v == 0_f32 {
+                    0_f32
                 } else {
-                    v.to_le_bytes()
+                    *v
                 };
-                state.write(&bytes);
+                state.write(&normalized.to_le_bytes());
             }
             Value::Double(v) => {
-                // f64 does not implement Hash, so simply hash the byte representation
-                // IEEE floats have + 0 and - 0, which are the same value but have different byte representations
-                let bytes = if *v == (-0_f64) {
-                    0_f64.to_le_bytes()
+                // See `Value::Float` above.
+                let normalized = if v.is_nan() {
+                    f64::NAN
+                } else if *v == 0_f64 {
+                    0_f64
                 } else {
-                    v.to_le_bytes()
+                    *v
                 };
-                state.write(&bytes);
+                state.write(&normalized.to_le_bytes());
             }
             Value::Compound(map) => {
                 for (k, v) in map {
@@ -472,273 +428,5 @@ impl Hash for Value {
             Value::IntArray(v) => i32::hash_slice(v, state),
             Value::LongArray(v) => i64::hash_slice(v, state),
         }
-    }
-}
-
-impl<'de> Deserialize<'de> for Value {
-    #[inline]
-    fn deserialize<D>(deserializer: D) -> Result<Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(ValueVisitor)
-    }
-}
-
-#[inline]
-fn serialize_seq<T, S>(ser: S, seq: &[T]) -> Result<S::Ok, S::Error>
-where
-    T: Serialize,
-    S: Serializer,
-{
-    let mut seq_ser = ser.serialize_seq(Some(seq.len()))?;
-    for element in seq {
-        seq_ser.serialize_element(element)?;
-    }
-    seq_ser.end()
-}
-
-impl Serialize for Value {
-    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Value::Byte(byte) => ser.serialize_i8(*byte),
-            Value::Short(short) => ser.serialize_i16(*short),
-            Value::Int(int) => ser.serialize_i32(*int),
-            Value::Long(long) => ser.serialize_i64(*long),
-            Value::Float(float) => ser.serialize_f32(*float),
-            Value::Double(double) => ser.serialize_f64(*double),
-            Value::ByteArray(array) => ser.serialize_bytes(array),
-            Value::String(string) => {
-                if ser.is_human_readable() {
-                    // Human-readable formats (e.g. SNBT) are text, so hand over
-                    // a (lossily) UTF-8 decoded string.
-                    ser.serialize_str(&string.to_str_lossy())
-                } else {
-                    // Binary NBT: emit a raw String tag via the magic newtype
-                    // token so non-UTF-8 bytes round-trip losslessly.
-                    ser.serialize_newtype_struct(RAW_STRING_TOKEN, string)
-                }
-            }
-            Value::List(seq) => serialize_seq(ser, seq),
-            Value::Compound(map) => {
-                let human_readable = ser.is_human_readable();
-                let mut map_ser = ser.serialize_map(Some(map.len()))?;
-                for (k, v) in map {
-                    if human_readable {
-                        map_ser.serialize_entry(&k.to_str_lossy(), v)?;
-                    } else {
-                        map_ser.serialize_entry(&RawString(k), v)?;
-                    }
-                }
-                map_ser.end()
-            }
-            Value::IntArray(seq) => serialize_seq(ser, seq),
-            Value::LongArray(seq) => serialize_seq(ser, seq),
-        }
-    }
-}
-
-/// Serializes a [`BString`] as a raw NBT String tag via the magic newtype
-/// token, so that compound keys holding non-UTF-8 bytes round-trip losslessly
-/// through the binary serializer.
-struct RawString<'a>(&'a BString);
-
-impl Serialize for RawString<'_> {
-    #[inline]
-    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        ser.serialize_newtype_struct(RAW_STRING_TOKEN, self.0)
-    }
-}
-
-struct ValueVisitor;
-
-impl<'de> Visitor<'de> for ValueVisitor {
-    type Value = Value;
-
-    #[inline]
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("any valid NBT value")
-    }
-
-    #[inline]
-    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::Byte(v as i8))
-    }
-
-    #[inline]
-    fn visit_i8<E>(self, v: i8) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::Byte(v))
-    }
-
-    #[inline]
-    fn visit_i16<E>(self, v: i16) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::Short(v))
-    }
-
-    #[inline]
-    fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::Int(v))
-    }
-
-    #[inline]
-    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::Long(v))
-    }
-
-    #[inline]
-    fn visit_f32<E>(self, v: f32) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::Float(v))
-    }
-
-    #[inline]
-    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::Double(v))
-    }
-
-    #[inline]
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::String(BString::from(v)))
-    }
-
-    #[inline]
-    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::String(BString::from(v)))
-    }
-
-    // NBT String tags are routed through the byte-oriented entry points so that
-    // non-UTF-8 payloads reach a `Value` losslessly as a `Value::String`. NBT
-    // `ByteArray` tags never reach here: they are surfaced through
-    // `visit_newtype_struct` so they stay distinct from strings (see below).
-    #[inline]
-    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::String(BString::from(v)))
-    }
-
-    #[inline]
-    fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Value::String(BString::from(v)))
-    }
-
-    // NBT `ByteArray` tags are surfaced through a newtype struct by both the
-    // binary and SNBT deserializers. String tags arrive via `visit_byte_buf`
-    // and lists via `visit_seq`, so routing byte arrays here keeps all three
-    // distinct and lets a `ByteArray` round-trip losslessly as
-    // `Value::ByteArray`. The inner value is served as raw bytes.
-    #[inline]
-    fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct RawBytesVisitor;
-
-        impl<'de> Visitor<'de> for RawBytesVisitor {
-            type Value = Vec<u8>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a raw NBT byte array")
-            }
-
-            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(v.to_vec())
-            }
-
-            fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(v)
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>,
-            {
-                let mut out = Vec::new();
-                if let Some(hint) = seq.size_hint() {
-                    out.reserve(hint);
-                }
-                while let Some(byte) = seq.next_element::<i8>()? {
-                    out.push(byte.cast_unsigned());
-                }
-                Ok(out)
-            }
-        }
-
-        deserializer
-            .deserialize_byte_buf(RawBytesVisitor)
-            .map(Value::ByteArray)
-    }
-
-    #[inline]
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut out = Vec::new();
-        if let Some(hint) = seq.size_hint() {
-            out.reserve(hint);
-        }
-
-        while let Some(element) = seq.next_element()? {
-            out.push(element);
-        }
-
-        Ok(Value::List(out))
-    }
-
-    #[inline]
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut out: BTreeMap<BString, Value> = BTreeMap::new();
-
-        while let Some((key, value)) = map.next_entry()? {
-            out.insert(key, value);
-        }
-
-        Ok(Value::Compound(out))
     }
 }

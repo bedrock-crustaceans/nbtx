@@ -1,822 +1,476 @@
-use std::marker::PhantomData;
+//! NBT (binary) deserialization, driven by `facet` reflection.
+//!
+//! The deserializer reads NBT bytes and builds a [`facet_reflect::Partial`] for
+//! the target type. The NBT tag drives how bytes are read; the *target* Rust
+//! type drives how they are stored:
+//!
+//! * A dynamic [`Value`] target captures the exact tag of every node.
+//! * A `#[derive(Facet)]` struct matches NBT keys against field names
+//!   (`#[facet(rename = "...")]`-aware); an unknown key is an error unless the
+//!   struct opts out with `#[facet(nbtx::allow_unknown_fields)]`, and missing
+//!   `Option` fields default to `None`.
+//! * `Vec<T>`/`[T; N]` read `List`, `ByteArray`, `IntArray` or `LongArray`
+//!   tags; a map reads a `Compound`.
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
-use paste::paste;
-use serde::de::value::BytesDeserializer;
-use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, de};
-use varint_rs::VarintReader;
+use byteorder::ReadBytesExt;
+use facet::Facet;
+use facet_core::{Def, ScalarType, Shape, Type, UserType};
+use facet_reflect::Partial;
 
-use crate::error::{UnexpectedEnd, UnexpectedEof, UnexpectedType, Unsupported};
-use crate::{EndiannessImpl, Error, FieldType, NetworkLittleEndian, Variant};
+use crate::error::{UnexpectedEnd, UnexpectedType, UnknownField, Unsupported};
+use crate::named;
+use crate::nbt::io;
+use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, Value, VarintEndian};
 
-/// Verifies that the deserialized type is equal to the expected type.
-macro_rules! is_ty {
-    ($expected: ident, $field_name: expr, $actual: expr) => {
-        if $actual != FieldType::$expected {
-            return Err(Error::UnexpectedType(UnexpectedType {
-                expected: FieldType::$expected,
-                actual: $actual,
+type Part<'f> = Partial<'f, true>;
 
-                #[cfg(feature = "error-context")]
-                at: $field_name
-                    .take()
-                    .unwrap_or_else(|| String::from("unknown")),
-                #[cfg(feature = "error-context")]
-                index: None,
-            }));
+fn reflect_err(e: impl std::fmt::Display) -> Error {
+    Error::Other(e.to_string())
+}
+
+fn unsupported(op: &'static str) -> Error {
+    Error::Unsupported(Unsupported {
+        op,
+        #[cfg(feature = "error-context")]
+        at: String::from("unknown"),
+        #[cfg(feature = "error-context")]
+        index: None,
+    })
+}
+
+fn unexpected_type(expected: FieldType, actual: FieldType) -> Error {
+    Error::UnexpectedType(UnexpectedType {
+        expected,
+        actual,
+        #[cfg(feature = "error-context")]
+        at: String::from("unknown"),
+        #[cfg(feature = "error-context")]
+        index: None,
+    })
+}
+
+fn is_value(shape: &Shape) -> bool {
+    shape.id == <Value as Facet>::SHAPE.id
+}
+
+/// Returns `true` if the shape is `bstr::BString`/`BStr` (an NBT `String` stored
+/// as raw, possibly non-UTF-8 bytes rather than a UTF-8-validated [`String`]).
+fn is_bstring(shape: &Shape) -> bool {
+    matches!(shape.type_identifier, "BString" | "BStr")
+}
+
+/// Builds the `unknown compound key` error for `shape`'s struct.
+fn unknown_field(shape: &Shape, key: &[u8]) -> Error {
+    Error::UnknownField(UnknownField {
+        field: bstr::BStr::new(key).to_string(),
+        container: shape.type_identifier,
+    })
+}
+
+/// Reads the payload of NBT tag `tag` into the current partial frame, whose
+/// target type is described by `shape`.
+///
+/// `depth` is the number of containers already entered; every nested-container
+/// reader checks it against [`MAX_DEPTH`](crate::MAX_DEPTH) before recursing, so
+/// a maliciously deep document errors out instead of overflowing the stack.
+fn read_into<'f, F: EndiannessImpl, R: ReadBytesExt>(
+    p: Part<'f>,
+    shape: &'static Shape,
+    tag: FieldType,
+    r: &mut R,
+    depth: usize,
+) -> Result<Part<'f>, Error> {
+    // This function is on the recursion path, so it deliberately keeps almost
+    // nothing in its own frame: every non-recursive case is delegated to an
+    // `#[inline(never)]` leaf helper. Unoptimised builds give each temporary in
+    // a function its own stack slot without reuse, so folding the leaf cases
+    // back in here would multiply the per-level stack cost and let a document
+    // well inside `MAX_DEPTH` still overflow the stack.
+
+    // A dynamic `Value` target swallows the whole (possibly nested) subtree.
+    if is_value(shape) {
+        return read_value_leaf::<F, R>(p, tag, r, depth);
+    }
+
+    // Option: the key was present, so this is `Some`.
+    if let Def::Option(def) = shape.def {
+        let p = p.begin_some().map_err(reflect_err)?;
+        let p = read_into::<F, R>(p, def.t(), tag, r, depth)?;
+        return p.end().map_err(reflect_err);
+    }
+
+    // `BString` reflects as a `Def::List<u8>` and scalars can carry a `Def` of
+    // their own, so both are ruled out before the container dispatch below.
+    if !is_bstring(shape) && ScalarType::try_from_shape(shape).is_none() {
+        match shape.def {
+            Def::List(def) => return read_seq::<F, R>(p, def.t(), tag, r, None, depth),
+            Def::Array(def) => return read_seq::<F, R>(p, def.t(), tag, r, Some(def.n), depth),
+            Def::Map(def) => return read_map::<F, R>(p, def.k(), def.v(), tag, r, depth),
+            _ => {}
+        }
+        if let Type::User(UserType::Struct(_)) = shape.ty {
+            return read_struct::<F, R>(p, shape, tag, r, depth);
+        }
+    }
+
+    read_leaf::<F, R>(p, shape, tag, r)
+}
+
+/// Reads a dynamic [`Value`] subtree. Split out of [`read_into`] so the 80-byte
+/// `Value` temporary does not sit in every recursive frame.
+#[inline(never)]
+fn read_value_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
+    p: Part<'f>,
+    tag: FieldType,
+    r: &mut R,
+    depth: usize,
+) -> Result<Part<'f>, Error> {
+    let v = io::read_value::<F, R>(r, tag, depth)?;
+    p.set(v).map_err(reflect_err)
+}
+
+/// All the non-recursive target types. Split out of [`read_into`] to keep the
+/// recursive frame small; see the comment there.
+#[inline(never)]
+fn read_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
+    p: Part<'f>,
+    shape: &'static Shape,
+    tag: FieldType,
+    r: &mut R,
+) -> Result<Part<'f>, Error> {
+    // `bstr::BString` field: read a `String` tag's raw bytes without UTF-8
+    // validation (unlike a concrete `String`, which must be valid UTF-8).
+    if is_bstring(shape) {
+        if tag != FieldType::String {
+            return Err(unexpected_type(FieldType::String, tag));
+        }
+        let bytes = io::read_str_payload::<F, R>(r)?;
+        return p.set(bstr::BString::from(bytes)).map_err(reflect_err);
+    }
+
+    if let Some(scalar) = ScalarType::try_from_shape(shape) {
+        return read_scalar::<F, R>(p, scalar, tag, r);
+    }
+
+    match shape.ty {
+        // A unit enum variant is written as a String tag holding the variant's
+        // name (see `write_enum` in `nbt::ser`); a data-carrying variant is
+        // rejected there and so never appears on the wire. Selecting a
+        // data-carrying variant by name here would still leave its fields
+        // unset, which `Partial::build` then reports on its own.
+        Type::User(UserType::Enum(_)) => {
+            if tag != FieldType::String {
+                return Err(unexpected_type(FieldType::String, tag));
+            }
+            let name = io::read_str_payload::<F, R>(r)?;
+            let name = bstr::BStr::new(&name).to_string();
+            p.select_variant_named(&name).map_err(reflect_err)
+        }
+        _ => Err(unsupported("deserialization of this type is not supported")),
+    }
+}
+
+#[inline(never)]
+fn read_scalar<'f, F: EndiannessImpl, R: ReadBytesExt>(
+    p: Part<'f>,
+    scalar: ScalarType,
+    tag: FieldType,
+    r: &mut R,
+) -> Result<Part<'f>, Error> {
+    macro_rules! expect {
+        ($ty:ident) => {
+            if tag != FieldType::$ty {
+                return Err(unexpected_type(FieldType::$ty, tag));
+            }
+        };
+    }
+
+    match scalar {
+        ScalarType::Bool => {
+            expect!(Byte);
+            // Only `0x01` is `true`; every other byte, including 0x02, is
+            // `false`. TAG_Byte is a signed 8-bit integer that happens to be
+            // used as a flag, and a `!= 0` test would disagree with the Bedrock
+            // decoders that produced the data.
+            p.set(io::read_i8(r)? == 1).map_err(reflect_err)
+        }
+        ScalarType::I8 => {
+            expect!(Byte);
+            p.set(io::read_i8(r)?).map_err(reflect_err)
+        }
+        ScalarType::U8 => {
+            expect!(Byte);
+            p.set(io::read_i8(r)?.cast_unsigned()).map_err(reflect_err)
+        }
+        ScalarType::I16 => {
+            expect!(Short);
+            p.set(io::read_i16::<F, R>(r)?).map_err(reflect_err)
+        }
+        ScalarType::I32 => {
+            expect!(Int);
+            p.set(io::read_i32::<F, R>(r)?).map_err(reflect_err)
+        }
+        ScalarType::I64 => {
+            expect!(Long);
+            p.set(io::read_i64::<F, R>(r)?).map_err(reflect_err)
+        }
+        ScalarType::F32 => {
+            expect!(Float);
+            p.set(io::read_f32::<F, R>(r)?).map_err(reflect_err)
+        }
+        ScalarType::F64 => {
+            expect!(Double);
+            p.set(io::read_f64::<F, R>(r)?).map_err(reflect_err)
+        }
+        ScalarType::Str | ScalarType::String | ScalarType::CowStr => {
+            expect!(String);
+            let bytes = io::read_str_payload::<F, R>(r)?;
+            // A concrete `String`/`&str` field validates plain UTF-8 and errors
+            // otherwise; an NBT string that is not valid UTF-8 needs a
+            // `bstr::BString` field or `Value`.
+            p.set(String::from_utf8(bytes)?).map_err(reflect_err)
+        }
+        _ => Err(unsupported(
+            "deserialization of this scalar type is not supported",
+        )),
+    }
+}
+
+/// Normalises a sequence tag into `(element tag, length)`; a `List` carries its
+/// own element type, the typed arrays imply theirs. Split out of [`read_seq`] to
+/// keep that recursive frame small.
+#[inline(never)]
+fn read_seq_header<F: EndiannessImpl, R: ReadBytesExt>(
+    tag: FieldType,
+    r: &mut R,
+) -> Result<(FieldType, usize), Error> {
+    Ok(match tag {
+        FieldType::List => {
+            let elem_tag = io::read_tag(r)?;
+            let len = io::read_seq_len::<F, R>(r)? as usize;
+            (elem_tag, len)
+        }
+        FieldType::ByteArray => (FieldType::Byte, io::read_seq_len::<F, R>(r)? as usize),
+        FieldType::IntArray => (FieldType::Int, io::read_seq_len::<F, R>(r)? as usize),
+        FieldType::LongArray => (FieldType::Long, io::read_seq_len::<F, R>(r)? as usize),
+        other => return Err(unexpected_type(FieldType::List, other)),
+    })
+}
+
+/// Parses and discards one value's payload, keeping the stream in sync.
+///
+/// Split out (and never inlined) so the 80-byte `Value` temporary it needs stays
+/// out of the frames of the recursive `read_struct`/`read_map`.
+#[inline(never)]
+fn skip_value<F: EndiannessImpl, R: ReadBytesExt>(
+    r: &mut R,
+    tag: FieldType,
+    depth: usize,
+) -> Result<(), Error> {
+    io::read_value::<F, R>(r, tag, depth)?;
+    Ok(())
+}
+
+/// Reads a `List`/`ByteArray`/`IntArray`/`LongArray` tag into a `Vec`
+/// (`array_len = None`) or fixed-size array (`array_len = Some(n)`).
+fn read_seq<'f, F: EndiannessImpl, R: ReadBytesExt>(
+    p: Part<'f>,
+    elem_shape: &'static Shape,
+    tag: FieldType,
+    r: &mut R,
+    array_len: Option<usize>,
+    depth: usize,
+) -> Result<Part<'f>, Error> {
+    io::check_depth(depth)?;
+    let (elem_tag, len) = read_seq_header::<F, R>(tag, r)?;
+
+    if let Some(n) = array_len {
+        if len != n {
+            return Err(unexpected_type(FieldType::List, tag));
+        }
+        let mut p = p.init_array().map_err(reflect_err)?;
+        for i in 0..len {
+            p = p.begin_nth_field(i).map_err(reflect_err)?;
+            p = read_into::<F, R>(p, elem_shape, elem_tag, r, depth + 1)?;
+            p = p.end().map_err(reflect_err)?;
+        }
+        Ok(p)
+    } else {
+        let mut p = p.init_list().map_err(reflect_err)?;
+        for _ in 0..len {
+            p = p.begin_list_item().map_err(reflect_err)?;
+            p = read_into::<F, R>(p, elem_shape, elem_tag, r, depth + 1)?;
+            p = p.end().map_err(reflect_err)?;
+        }
+        Ok(p)
+    }
+}
+
+/// Reads a `Compound` into a map. Duplicate keys are first-wins, matching
+/// [`io::read_compound`].
+fn read_map<'f, F: EndiannessImpl, R: ReadBytesExt>(
+    p: Part<'f>,
+    _key_shape: &'static Shape,
+    value_shape: &'static Shape,
+    tag: FieldType,
+    r: &mut R,
+    depth: usize,
+) -> Result<Part<'f>, Error> {
+    if tag != FieldType::Compound {
+        return Err(unexpected_type(FieldType::Compound, tag));
+    }
+    io::check_depth(depth)?;
+    let mut seen: Vec<String> = Vec::new();
+    let mut p = p.init_map().map_err(reflect_err)?;
+    loop {
+        let entry_tag = io::read_tag(r)?;
+        if entry_tag == FieldType::End {
+            break;
+        }
+        let key = String::from_utf8(io::read_str_payload::<F, R>(r)?)?;
+        if seen.contains(&key) {
+            // Duplicate key: keep the first, but still consume the payload so
+            // the stream stays in sync.
+            skip_value::<F, R>(r, entry_tag, depth + 1)?;
+            continue;
+        }
+        seen.push(key.clone());
+        p = p.begin_key().map_err(reflect_err)?;
+        p = p.set(key).map_err(reflect_err)?;
+        p = p.end().map_err(reflect_err)?;
+        p = p.begin_value().map_err(reflect_err)?;
+        p = read_into::<F, R>(p, value_shape, entry_tag, r, depth + 1)?;
+        p = p.end().map_err(reflect_err)?;
+    }
+    Ok(p)
+}
+
+/// Reads a `Compound` into a `#[derive(Facet)]` struct.
+///
+/// * An unrecognised key is an [`Error::UnknownField`] unless the struct carries
+///   `#[facet(nbtx::allow_unknown_fields)]`, in which case its payload is parsed
+///   and discarded (the pre-4.0 behaviour).
+/// * A key that repeats keeps the value of its *first* occurrence, matching
+///   [`io::read_compound`].
+fn read_struct<'f, F: EndiannessImpl, R: ReadBytesExt>(
+    p: Part<'f>,
+    shape: &'static Shape,
+    tag: FieldType,
+    r: &mut R,
+    depth: usize,
+) -> Result<Part<'f>, Error> {
+    if tag != FieldType::Compound {
+        return Err(unexpected_type(FieldType::Compound, tag));
+    }
+    io::check_depth(depth)?;
+    let Type::User(UserType::Struct(st)) = shape.ty else {
+        return Err(unsupported("expected a struct"));
+    };
+    let allow_unknown = crate::has_nbtx_attr(shape, "allow_unknown_fields");
+
+    let mut filled = vec![false; st.fields.len()];
+    let mut p = p;
+    loop {
+        let entry_tag = io::read_tag(r)?;
+        if entry_tag == FieldType::End {
+            break;
+        }
+        let key = io::read_str_payload::<F, R>(r)?;
+        // Match against each field's effective (rename-aware) name.
+        let field = st
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.effective_name().as_bytes() == key.as_slice());
+
+        match field {
+            Some((idx, _)) if filled[idx] => {
+                // Duplicate key: first occurrence wins, discard this payload.
+                skip_value::<F, R>(r, entry_tag, depth + 1)?;
+            }
+            Some((idx, f)) => {
+                filled[idx] = true;
+                p = p.begin_nth_field(idx).map_err(reflect_err)?;
+                p = read_into::<F, R>(p, f.shape(), entry_tag, r, depth + 1)?;
+                p = p.end().map_err(reflect_err)?;
+            }
+            None if allow_unknown => {
+                // Opted out of strict decoding: consume and discard the value.
+                skip_value::<F, R>(r, entry_tag, depth + 1)?;
+            }
+            None => return Err(unknown_field(shape, &key)),
+        }
+    }
+    Ok(p)
+}
+
+/// Reads a single value of type `T` from the reader.
+///
+/// # Root handling
+///
+/// Any root tag except `TAG_End` is accepted, and the root *name* is discarded —
+/// exactly the mirror image of what [`to_bytes`](crate::to_bytes) writes, so
+/// every `T` nbtx can encode it can also decode. To read the root name, decode
+/// into a [`Named<T>`](crate::Named).
+pub fn from_bytes<'f, F: EndiannessImpl, T: Facet<'f>>(
+    reader: &mut impl ReadBytesExt,
+) -> Result<T, Error> {
+    let root_tag = io::read_tag(reader)?;
+    if root_tag == FieldType::End {
+        // A lone `TAG_End` is the compound terminator, not a document.
+        return Err(Error::UnexpectedEnd(UnexpectedEnd {
+            #[cfg(feature = "error-context")]
+            at: String::from("root"),
+            #[cfg(feature = "error-context")]
+            index: None,
+        }));
+    }
+    let root_name = io::read_str_payload::<F, _>(reader)?;
+
+    let shape = <T as Facet>::SHAPE;
+    let p = Partial::alloc::<T>().map_err(reflect_err)?;
+
+    // `Named<T>` captures the root name rather than discarding it.
+    let p = if let Some(nr) = named::as_named_root(shape) {
+        let p = p.begin_nth_field(nr.name_idx).map_err(reflect_err)?;
+        let p = p
+            .set(bstr::BString::from(root_name))
+            .map_err(reflect_err)?
+            .end()
+            .map_err(reflect_err)?;
+        let p = p.begin_nth_field(nr.value_idx).map_err(reflect_err)?;
+        read_into::<F, _>(p, nr.value_shape, root_tag, reader, 0)?
+            .end()
+            .map_err(reflect_err)?
+    } else {
+        read_into::<F, _>(p, shape, root_tag, reader, 0)?
+    };
+
+    let built = p.build().map_err(reflect_err)?;
+    built.materialize::<T>().map_err(reflect_err)
+}
+
+macro_rules! endian_fn {
+    ($from:ident, $endian:ty, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $from<'f, T: Facet<'f>>(reader: &mut impl ReadBytesExt) -> Result<T, Error> {
+            from_bytes::<$endian, T>(reader)
         }
     };
 }
 
-/// Returns a `not supported` error.
-macro_rules! forward_unsupported {
-    ($($ty: ident),+) => {
-        paste! {$(
-
-            fn [<deserialize_ $ty>]<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
-            where
-                V: Visitor<'de>
-            {
-                Err(Error::Unsupported(Unsupported {
-                    op: concat!("deserialization of `", stringify!($ty), "` is not supported"),
-                    #[cfg(feature = "error-context")]
-                    at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")),
-                    #[cfg(feature = "error-context")]
-                    index: None
-                }))
-            }
-        )+}
-    }
-}
-
-/// NBT deserializer. Rather than using this directly you should probably use one of the methods
-/// provided in the root, such as [`from_le_bytes`].
-#[derive(Debug)]
-pub struct Deserializer<'re, 'de, F, R>
-where
-    R: ReadBytesExt,
-    F: EndiannessImpl + 'de,
-{
-    input: &'re mut R,
-    next_ty: FieldType,
-    is_key: bool,
-    #[cfg(feature = "error-context")]
-    curr_key: Option<String>,
-    _marker: PhantomData<&'de F>,
-}
-
-impl<'re, 'de, F, R> Deserializer<'re, 'de, F, R>
-where
-    R: ReadBytesExt,
-    F: EndiannessImpl + 'de,
-{
-    /// Creates a new deserializer, consuming the reader.
-    pub fn new(input: &'re mut R) -> Result<Self, Error> {
-        let next_ty = FieldType::try_from(
-            input.read_u8()?,
-            #[cfg(feature = "error-context")]
-            &mut None,
-            #[cfg(feature = "error-context")]
-            Some(0),
-        )?;
-        if next_ty != FieldType::Compound {
-            return Err(Error::UnexpectedType(UnexpectedType {
-                actual: next_ty,
-                expected: FieldType::Compound,
-                #[cfg(feature = "error-context")]
-                at: String::from("root"),
-                #[cfg(feature = "error-context")]
-                index: Some(0),
-            }));
-        }
-
-        let de = Deserializer {
-            input,
-            next_ty,
-            is_key: false,
-            #[cfg(feature = "error-context")]
-            curr_key: None,
-            _marker: PhantomData,
-        };
-
-        // Ignore name of root component
-        let len = match F::AS_ENUM {
-            Variant::BigEndian => de.input.read_u16::<BigEndian>()? as u32,
-            Variant::LittleEndian => de.input.read_u16::<LittleEndian>()? as u32,
-            Variant::NetworkEndian => de.input.read_u32_varint()?,
-        };
-
-        let mut buf = vec![0; len as usize];
-        de.input.read_exact(&mut buf)?;
-
-        let _name = String::from_utf8(buf)?;
-
-        Ok(de)
-    }
-
-    /// Reads the raw bytes backing the current tag without any UTF-8
-    /// validation.
-    ///
-    /// This supports both [`String`](FieldType::String) and
-    /// [`ByteArray`](FieldType::ByteArray) tags: the two use different length
-    /// encodings (a short/varint length for strings and a signed 32-bit length
-    /// for byte arrays), so the encoding is selected based on the current tag.
-    /// It is used by the byte-oriented deserialize entry points to give raw
-    /// access to non-UTF-8 NBT strings (e.g. into [`bstr::BString`] via
-    /// [`crate::NbtString`]).
-    fn read_raw_bytes(&mut self) -> Result<Vec<u8>, Error> {
-        let len = match self.next_ty {
-            FieldType::String => match F::AS_ENUM {
-                Variant::BigEndian => self.input.read_u16::<BigEndian>()? as u32,
-                Variant::LittleEndian => self.input.read_u16::<LittleEndian>()? as u32,
-                Variant::NetworkEndian => self.input.read_u32_varint()?,
-            },
-            FieldType::ByteArray => match F::AS_ENUM {
-                Variant::BigEndian => self.input.read_i32::<BigEndian>()?.cast_unsigned(),
-                Variant::LittleEndian => self.input.read_i32::<LittleEndian>()?.cast_unsigned(),
-                Variant::NetworkEndian => self.input.read_i32_varint()?.cast_unsigned(),
-            },
-            actual => {
-                // `UnexpectedType` can only report a single expected tag, but
-                // both String and ByteArray are acceptable here.
-                #[cfg(feature = "error-context")]
-                let at = self
-                    .curr_key
-                    .take()
-                    .unwrap_or_else(|| String::from("unknown"));
-
-                #[cfg(feature = "error-context")]
-                return Err(Error::Other(format!(
-                    "expected tag of type string or byte array, found {actual} at field `{at}`"
-                )));
-
-                #[cfg(not(feature = "error-context"))]
-                return Err(Error::Other(format!(
-                    "expected tag of type string or byte array, found {actual}"
-                )));
-            }
-        };
-
-        let mut buf = vec![0; len as usize];
-        self.input.read_exact(&mut buf)?;
-
-        #[cfg(feature = "error-context")]
-        if self.is_key {
-            self.curr_key = Some(String::from_utf8_lossy(&buf).into_owned());
-        }
-
-        Ok(buf)
-    }
-}
-
-/// Reads a single object of type `T` from the given buffer.
-///
-/// On success, the deserialized object and number of bytes read from the buffer are returned.
-pub fn from_bytes<'de, 're, F, T>(reader: &'re mut impl ReadBytesExt) -> Result<T, Error>
-where
-    T: Deserialize<'de>,
-    F: EndiannessImpl + 'de,
-{
-    let mut deserializer = Deserializer::<F, _>::new(reader)?;
-    let output = T::deserialize(&mut deserializer)?;
-
-    Ok(output)
-}
-
-/// Reads a single object of type `T` from the given buffer.
-///
-/// This function uses the little endian format of NBT, which is used by disk formats
-/// in Minecraft: Bedrock Edition.
-///
-/// On success, the deserialised object and amount of bytes read from the buffer are returned.
-///
-/// # Example
-///
-/// ```rust
-/// # fn main() -> Result<(), nbtx::Error> {
-///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
-///  struct Data {
-///     value: String
-///  }
-///
-/// # let data = Data {
-/// #   value: String::from("Hello, World!")
-/// # };
-/// # let obuffer = nbtx::to_le_bytes(&data)?;
-/// # let mut buffer: &[u8] = obuffer.as_ref();
-///
-///  let data: Data = nbtx::from_le_bytes(&mut buffer)?;
-///
-///  println!("Got {data:?}!");
-/// # Ok(())
-/// # }
-/// ```
-pub fn from_le_bytes<'de, T, R>(reader: &mut R) -> Result<T, Error>
-where
-    R: ReadBytesExt,
-    T: Deserialize<'de>,
-{
-    from_bytes::<LittleEndian, T>(reader)
-}
-
-/// Reads a single object of type `T` from the given buffer.
-///
-/// This function uses the little endian format of NBT, which is used by
-/// Minecraft: Java Edition.
-///
-/// On success, the deserialised object and amount of bytes read from the buffer are returned.
-///
-/// # Example
-///
-/// ```rust
-/// # fn main() -> Result<(), nbtx::Error> {
-///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
-///  struct Data {
-///     value: String
-///  }
-///
-/// # let data = Data {
-/// #   value: String::from("Hello, World!")
-/// # };
-/// # let owned_buffer = nbtx::to_be_bytes(&data)?;
-/// # let mut buffer = owned_buffer.as_slice();
-///
-///  let data: Data = nbtx::from_be_bytes(&mut buffer)?;
-///
-///  println!("Got {data:?}!");
-/// # Ok(())
-/// # }
-/// ```
-pub fn from_be_bytes<'de, T, R>(reader: &mut R) -> Result<T, Error>
-where
-    R: ReadBytesExt,
-    T: Deserialize<'de>,
-{
-    from_bytes::<BigEndian, T>(reader)
-}
-
-/// Reads a single object of type `T` from the given buffer.
-///
-/// This function uses the variable format of NBT, which is used by network formats
-/// in Minecraft: Bedrock Edition.
-///
-/// On success, the deserialised object and amount of bytes read from the buffer are returned.
-///
-/// # Example
-///
-/// ```rust
-/// # fn main() -> Result<(), nbtx::Error> {
-///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
-///  struct Data {
-///     value: String
-///  }
-///
-/// # let data = Data {
-/// #   value: String::from("Hello, World!")
-/// # };
-/// # let owned_buffer = nbtx::to_net_bytes(&data)?;
-/// # let mut buffer = owned_buffer.as_slice();
-///
-///  let data: Data = nbtx::from_net_bytes(&mut buffer)?;
-///  println!("Got {data:?}!");
-/// # Ok(())
-/// # }
-/// ```
-pub fn from_net_bytes<'data, T, R>(reader: &mut R) -> Result<T, Error>
-where
-    R: ReadBytesExt,
-    T: Deserialize<'data>,
-{
-    from_bytes::<NetworkLittleEndian, T>(reader)
-}
-
-impl<'de, 'a, F, R> de::Deserializer<'de> for &'a mut Deserializer<'_, 'de, F, R>
-where
-    R: ReadBytesExt,
-    F: EndiannessImpl + 'a,
-{
-    type Error = Error;
-
-    forward_unsupported!(char, u8, u16, u32, u64, i128, u128);
-
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        if self.is_key {
-            self.deserialize_string(visitor)
-        } else {
-            match self.next_ty {
-                FieldType::End => Err(Error::UnexpectedEnd(UnexpectedEnd {
-                    #[cfg(feature = "error-context")]
-                    at: self
-                        .curr_key
-                        .take()
-                        .unwrap_or_else(|| String::from("unknown")),
-                    #[cfg(feature = "error-context")]
-                    index: None,
-                })),
-                FieldType::Byte => self.deserialize_i8(visitor),
-                FieldType::Short => self.deserialize_i16(visitor),
-                FieldType::Int => self.deserialize_i32(visitor),
-                FieldType::Long => self.deserialize_i64(visitor),
-                FieldType::Float => self.deserialize_f32(visitor),
-                FieldType::Double => self.deserialize_f64(visitor),
-                // Route String tags through the byte-oriented path so that a
-                // self-describing target (i.e. `Value`) receives the raw bytes
-                // without UTF-8 validation, keeping non-UTF-8 strings lossless.
-                // A concrete `String` field still calls `deserialize_string`
-                // directly, so it keeps validating UTF-8.
-                FieldType::String => self.deserialize_byte_buf(visitor),
-                FieldType::Compound => self.deserialize_map(visitor),
-                // Surface a ByteArray tag through `visit_newtype_struct` so a
-                // self-describing target (`Value`) can tell it apart from a
-                // String tag (raw bytes via `visit_byte_buf`) and from a plain
-                // List, keeping it lossless as `Value::ByteArray`. Concrete
-                // targets (`Vec<i8>`, `serde_bytes`, ...) never reach here; they
-                // call `deserialize_seq`/`deserialize_bytes` directly.
-                //
-                // Note: foreign self-describing value types whose visitors do
-                // not implement `Visitor::visit_newtype_struct` will error on
-                // ByteArray tags here; `nbtx::Value` handles it.
-                FieldType::ByteArray => {
-                    let buf = self.read_raw_bytes()?;
-                    visitor.visit_newtype_struct(BytesDeserializer::new(&buf))
-                }
-                FieldType::List | FieldType::IntArray | FieldType::LongArray => {
-                    self.deserialize_seq(visitor)
-                }
-            }
-        }
-    }
-
-    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        is_ty!(Byte, self.curr_key, self.next_ty);
-
-        let n = self.input.read_u8()? != 0;
-        visitor.visit_bool(n)
-    }
-
-    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        is_ty!(Byte, self.curr_key, self.next_ty);
-
-        let n = self.input.read_i8()?;
-        visitor.visit_i8(n)
-    }
-
-    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        is_ty!(Short, self.curr_key, self.next_ty);
-
-        let n = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_i16::<BigEndian>(),
-            Variant::LittleEndian | Variant::NetworkEndian => self.input.read_i16::<LittleEndian>(),
-        }?;
-
-        visitor.visit_i16(n)
-    }
-
-    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        is_ty!(Int, self.curr_key, self.next_ty);
-
-        let n = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_i32::<BigEndian>(),
-            Variant::LittleEndian => self.input.read_i32::<LittleEndian>(),
-            Variant::NetworkEndian => self.input.read_i32_varint(),
-        }?;
-
-        visitor.visit_i32(n)
-    }
-
-    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        is_ty!(Long, self.curr_key, self.next_ty);
-
-        let n = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_i64::<BigEndian>(),
-            Variant::LittleEndian => self.input.read_i64::<LittleEndian>(),
-            Variant::NetworkEndian => self.input.read_i64_varint(),
-        }?;
-
-        visitor.visit_i64(n)
-    }
-
-    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        is_ty!(Float, self.curr_key, self.next_ty);
-
-        let n = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_f32::<BigEndian>(),
-            _ => self.input.read_f32::<LittleEndian>(),
-        }?;
-
-        visitor.visit_f32(n)
-    }
-
-    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        is_ty!(Double, self.curr_key, self.next_ty);
-
-        let n = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_f64::<BigEndian>(),
-            _ => self.input.read_f64::<LittleEndian>(),
-        }?;
-
-        visitor.visit_f64(n)
-    }
-
-    fn deserialize_str<V>(self, _visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::Unsupported(Unsupported {
-            op: "deserializing string references is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
-    }
-
-    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        is_ty!(String, self.curr_key, self.next_ty);
-
-        let len = match F::AS_ENUM {
-            Variant::BigEndian => self.input.read_u16::<BigEndian>()? as u32,
-            Variant::LittleEndian => self.input.read_u16::<LittleEndian>()? as u32,
-            Variant::NetworkEndian => self.input.read_u32_varint()?,
-        };
-
-        let mut buf = vec![0; len as usize];
-        self.input.read_exact(&mut buf)?;
-
-        let string = String::from_utf8(buf)?;
-
-        #[cfg(feature = "error-context")]
-        if self.is_key {
-            self.curr_key = Some(string.clone());
-        }
-
-        visitor.visit_string(string)
-    }
-
-    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        // Byte targets (`bstr::BString`, `serde_bytes`, ...) can back either an
-        // NBT String or ByteArray tag. Branch on the actual tag so that a String
-        // tag is handed over as raw bytes without UTF-8 validation.
-        let buf = self.read_raw_bytes()?;
-        visitor.visit_bytes(&buf)
-    }
-
-    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        // Byte targets (`bstr::BString`, `serde_bytes`, ...) can back either an
-        // NBT String or ByteArray tag. Branch on the actual tag so that a String
-        // tag is handed over as raw bytes without UTF-8 validation.
-        let buf = self.read_raw_bytes()?;
-        visitor.visit_byte_buf(buf)
-    }
-
-    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        // This is only used to represent possibly missing fields.
-        // If this code is reached, it means the key was found and the field exists.
-        // Therefore this is always some.
-        visitor.visit_some(self)
-    }
-
-    fn deserialize_unit<V>(self, _visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::Unsupported(Unsupported {
-            op: "deserializing unit values is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
-    }
-
-    fn deserialize_unit_struct<V>(self, _name: &'static str, _visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::Unsupported(Unsupported {
-            op: "deserializing unit structs is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
-    }
-
-    fn deserialize_newtype_struct<V>(
-        self,
-        _name: &'static str,
-        _visitor: V,
-    ) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::Unsupported(Unsupported {
-            op: "deserializing newtype structs is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
-    }
-
-    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_tuple(0, visitor)
-    }
-
-    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        let ty = match self.next_ty {
-            FieldType::ByteArray => FieldType::Byte,
-            FieldType::IntArray => FieldType::Int,
-            FieldType::LongArray => FieldType::Long,
-            _ => FieldType::try_from(
-                self.input.read_u8()?,
-                #[cfg(feature = "error-context")]
-                &mut self.curr_key,
-                #[cfg(feature = "error-context")]
-                None,
-            )?,
-        };
-
-        let de = SeqDeserializer::new(self, ty, len as u32)?;
-        visitor.visit_seq(de)
-    }
-
-    fn deserialize_tuple_struct<V>(
-        self,
-        _name: &'static str,
-        _len: usize,
-        _visitor: V,
-    ) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::Unsupported(Unsupported {
-            op: "deserializing tuple structs is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
-    }
-
-    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        is_ty!(Compound, self.curr_key, self.next_ty);
-
-        let de = MapDeserializer::from(self);
-        visitor.visit_map(de)
-    }
-
-    fn deserialize_struct<V>(
-        self,
-        _name: &'static str,
-        _fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_any(visitor)
-    }
-
-    fn deserialize_enum<V>(
-        self,
-        _name: &'static str,
-        _variants: &'static [&'static str],
-        _visitor: V,
-    ) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        Err(Error::Unsupported(Unsupported {
-            op: "deserializing enums is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
-    }
-
-    fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_string(visitor)
-    }
-
-    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_any(visitor)
-    }
-
-    fn is_human_readable(&self) -> bool {
-        false
-    }
-}
-
-/// Deserializes NBT sequences.
-///
-/// Sequences are in this case: [`ByteArray`](FieldType::ByteArray), [`IntArray`](FieldType::IntArray)
-/// [`LongArray`](FieldType::LongArray) and [`List`](FieldType::List).
-#[derive(Debug)]
-struct SeqDeserializer<'a, 're, 'de: 'a, F, R>
-where
-    R: ReadBytesExt,
-    F: EndiannessImpl,
-{
-    de: &'a mut Deserializer<'re, 'de, F, R>,
-    ty: FieldType,
-    remaining: u32,
-}
-
-impl<'de, 're, 'a, F, R> SeqDeserializer<'a, 're, 'de, F, R>
-where
-    R: ReadBytesExt,
-    F: EndiannessImpl,
-{
-    pub fn new(
-        de: &'a mut Deserializer<'re, 'de, F, R>,
-        ty: FieldType,
-        expected_len: u32,
-    ) -> Result<Self, Error> {
-        // debug_assert_ne!(ty, FieldType::End, "Cannot serialize sequence of end tags");
-
-        // ty is not read in here because the x_array types don't have a type prefix.
-
-        de.next_ty = ty;
-        let remaining = match F::AS_ENUM {
-            Variant::BigEndian => de.input.read_i32::<BigEndian>()?.cast_unsigned(),
-            Variant::LittleEndian => de.input.read_i32::<LittleEndian>()?.cast_unsigned(),
-            Variant::NetworkEndian => de.input.read_i32_varint()?.cast_unsigned(),
-        };
-
-        if expected_len != 0 && expected_len != remaining {
-            return Err(Error::UnexpectedEof(UnexpectedEof {
-                #[cfg(feature = "error-context")]
-                at: de
-                    .curr_key
-                    .take()
-                    .unwrap_or_else(|| String::from("unknown")),
-                #[cfg(feature = "error-context")]
-                index: None,
-            }));
-        }
-
-        Ok(Self { de, ty, remaining })
-    }
-}
-
-impl<'de, F, R> SeqAccess<'de> for SeqDeserializer<'_, '_, 'de, F, R>
-where
-    R: ReadBytesExt,
-    F: EndiannessImpl,
-{
-    type Error = Error;
-
-    fn next_element_seed<E>(&mut self, seed: E) -> Result<Option<E::Value>, Error>
-    where
-        E: DeserializeSeed<'de>,
-    {
-        if self.remaining > 0 {
-            self.remaining -= 1;
-
-            let output = seed.deserialize(&mut *self.de).map(Some);
-            self.de.next_ty = self.ty;
-            output
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-/// Deserialises NBT compounds.
-#[derive(Debug)]
-struct MapDeserializer<'a, 're, 'de: 'a, F, R>
-where
-    R: ReadBytesExt,
-    F: EndiannessImpl,
-{
-    de: &'a mut Deserializer<'re, 'de, F, R>,
-}
-
-impl<'de, 're, 'a, F, R> From<&'a mut Deserializer<'re, 'de, F, R>>
-    for MapDeserializer<'a, 're, 'de, F, R>
-where
-    R: ReadBytesExt,
-    F: EndiannessImpl,
-{
-    fn from(v: &'a mut Deserializer<'re, 'de, F, R>) -> Self {
-        Self { de: v }
-    }
-}
-
-impl<'de, F, R> MapAccess<'de> for MapDeserializer<'_, '_, 'de, F, R>
-where
-    R: ReadBytesExt,
-    F: EndiannessImpl,
-{
-    type Error = Error;
-
-    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Error>
-    where
-        K: DeserializeSeed<'de>,
-    {
-        self.de.is_key = true;
-        self.de.next_ty = FieldType::String;
-
-        let next_ty = FieldType::try_from(
-            self.de.input.read_u8()?,
-            #[cfg(feature = "error-context")]
-            &mut self.de.curr_key,
-            #[cfg(feature = "error-context")]
-            None,
-        )?;
-
-        let r = if next_ty == FieldType::End {
-            Ok(None)
-        } else {
-            seed.deserialize(&mut *self.de).map(Some)
-        };
-
-        self.de.is_key = false;
-        self.de.next_ty = next_ty;
-        r
-    }
-
-    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Error>
-    where
-        V: DeserializeSeed<'de>,
-    {
-        debug_assert_ne!(
-            self.de.next_ty,
-            FieldType::End,
-            "Cannot serialize end as a map field"
-        );
-        seed.deserialize(&mut *self.de)
-    }
-}
+endian_fn!(
+    from_be_bytes,
+    BigEndian,
+    "Reads a value from big-endian NBT (fixed-width big-endian integers)."
+);
+endian_fn!(
+    from_le_bytes,
+    LittleEndian,
+    "Reads a value from little-endian NBT (Minecraft: Bedrock Edition, disk)."
+);
+endian_fn!(
+    from_varint_bytes,
+    VarintEndian,
+    "Reads a value from varint little-endian NBT (Minecraft: Bedrock Edition, network)."
+);

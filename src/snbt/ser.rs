@@ -1,420 +1,427 @@
-use serde::{
-    Serialize,
-    ser::{self, Impossible},
-};
+//! Stringified NBT (SNBT) serialization, driven by `facet` reflection.
+//!
+//! Mirrors the binary serializer's tag conventions but emits the human-readable
+//! SNBT text used in Minecraft commands:
+//!
+//! * scalars use type suffixes: `b` (byte), `s` (short), `l` (long), `f`
+//!   (float), `d` (double); `i32` has no suffix; `bool` renders `true`/`false`
+//! * strings render as `"quoted"` text; a `bstr::BString`/`BStr` field is a
+//!   string too (rendered lossily, since SNBT is text), not a byte array
+//! * `Vec<u8>`/`ByteArray` → `[B;1b,2b,..]`, `Vec<i32>`/`IntArray` →
+//!   `[I;1,2,..]`, `Vec<i64>`/`LongArray` → `[L;1l,2l,..]`, other lists → `[..]`
+//! * struct/map/`Compound` → `{k:v,..}`
 
-use crate::Error;
+use bstr::ByteSlice;
+use facet::Facet;
+use facet_core::{Def, ScalarType, Shape, Type, UserType};
+use facet_reflect::Peek;
+
 use crate::error::Unsupported;
-use crate::nbt::ser::RAW_STRING_TOKEN;
+use crate::{Error, Value, check_depth};
 
-macro_rules! forward_unsupported {
-    ($($ty: ident),+) => {
-        paste::paste! {$(
-            fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), Error> {
-                Err(Error::Unsupported(Unsupported {
-                op: concat!("serialization of `", stringify!($ty), "` is not supported"),
-                #[cfg(feature = "error-context")]
-                at: self.curr_key.take().unwrap_or_else(|| String::from("unknown")),
-                #[cfg(feature = "error-context")]
-                index: None,
-            }))
-            }
-        )+}
-    }
+fn reflect_err(e: impl std::fmt::Display) -> Error {
+    Error::Other(e.to_string())
 }
 
-/// Serializes the given data into SNBT format.
-///
-/// # Example
-///
-/// ```rust
-/// # fn main() -> Result<(), nbtx::Error> {
-///  #[derive(serde::Serialize, serde::Deserialize, Debug)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbtx::to_string(&data)?;
-///  println!("Data in SNBT format is {data:?}");
-/// # Ok(())
-/// # }
-/// ```
-pub fn to_string<T: Serialize>(value: &T) -> Result<String, Error> {
+fn unsupported(op: &'static str) -> Error {
+    Error::Unsupported(Unsupported {
+        op,
+        #[cfg(feature = "error-context")]
+        at: String::from("unknown"),
+        #[cfg(feature = "error-context")]
+        index: None,
+    })
+}
+
+fn is_value(shape: &Shape) -> bool {
+    shape.id == <Value as Facet>::SHAPE.id
+}
+
+/// Returns `true` if the shape is `bstr::BString`/`BStr`. These reflect as a
+/// `Def::List<u8>`, but semantically hold an NBT *string*, so they render as a
+/// quoted string rather than a `[B;..]` byte-array literal — the same rule
+/// `nbt::ser::is_bstring` applies on the binary side, mirrored here so both
+/// codecs spell a `BString` field the same way.
+fn is_bstring(shape: &Shape) -> bool {
+    matches!(shape.type_identifier, "BString" | "BStr")
+}
+
+/// Serializes `value` into an SNBT string.
+pub fn to_string<'f, T: Facet<'f> + ?Sized>(value: &'f T) -> Result<String, Error> {
     let mut ser = Serializer::new();
-    value.serialize(&mut ser)?;
+    ser.serialize(value)?;
     Ok(ser.into_inner())
 }
 
-/// An SNBT serialiser.
+/// An SNBT serializer.
 #[derive(Default)]
 pub struct Serializer {
-    curr_key: Option<String>,
-    is_key: bool,
-    /// Set while serialising the payload of a [`RAW_STRING_TOKEN`] newtype
-    /// struct (e.g. [`crate::NbtString`]): the next `serialize_bytes` call then
-    /// renders a (lossily decoded) quoted string instead of a `[B;...]` byte
-    /// array, mirroring the binary serializer's raw-string handling.
-    force_string: bool,
     pub(crate) output: String,
 }
 
 impl Serializer {
-    /// Creates a new, empty serialiser.
+    /// Creates a new, empty serializer.
+    #[must_use]
     pub fn new() -> Serializer {
         Serializer {
-            curr_key: None,
-            is_key: false,
-            force_string: false,
             output: String::new(),
         }
     }
 
-    /// Consumes the serialiser and returns the output string.
+    /// Consumes the serializer and returns the output string.
+    #[must_use]
     pub fn into_inner(self) -> String {
         self.output
     }
+
+    /// Serializes a value, appending to the internal buffer.
+    pub fn serialize<'f, T: Facet<'f> + ?Sized>(&mut self, value: &'f T) -> Result<(), Error> {
+        render(&mut self.output, Peek::new(value), 0)
+    }
 }
 
-impl ser::Serializer for &mut Serializer {
-    type Ok = ();
-
-    type Error = Error;
-
-    type SerializeSeq = Self;
-    type SerializeTuple = Impossible<(), Error>;
-    type SerializeTupleStruct = Impossible<(), Error>;
-    type SerializeTupleVariant = Impossible<(), Error>;
-    type SerializeMap = Self;
-    type SerializeStruct = Self;
-    type SerializeStructVariant = Impossible<(), Error>;
-
-    forward_unsupported!(char, u8, u16, u32, u64, u128, i128);
-
-    fn serialize_bool(self, v: bool) -> Result<(), Error> {
-        self.output += if v { "true" } else { "false" };
-        Ok(())
-    }
-
-    fn serialize_i8(self, v: i8) -> Result<(), Error> {
-        self.output += &v.to_string();
-        self.output += "B";
-        Ok(())
-    }
-
-    fn serialize_i16(self, v: i16) -> Result<(), Error> {
-        self.output += &v.to_string();
-        self.output += "S";
-        Ok(())
-    }
-
-    fn serialize_i32(self, v: i32) -> Result<(), Error> {
-        self.output += &v.to_string();
-        Ok(())
-    }
-
-    fn serialize_i64(self, v: i64) -> Result<(), Error> {
-        self.output += &v.to_string();
-        self.output += "L";
-        Ok(())
-    }
-
-    fn serialize_f32(self, v: f32) -> Result<(), Error> {
-        self.output += &v.to_string();
-        self.output += "F";
-        Ok(())
-    }
-
-    fn serialize_f64(self, v: f64) -> Result<(), Error> {
-        self.output += &v.to_string();
-        self.output += "D";
-        Ok(())
-    }
-
-    fn serialize_str(self, v: &str) -> Result<(), Error> {
-        // A raw-string payload may reach here directly instead of through
-        // `serialize_bytes`; the marker is consumed either way.
-        self.force_string = false;
-
-        if self.is_key {
-            self.curr_key = Some(v.to_owned());
+fn quote_string(out: &mut String, s: &str) {
+    out.reserve(s.len() + 2);
+    out.push('"');
+    // Escape the two characters that would otherwise terminate or corrupt the
+    // quoted literal. The reader performs the inverse un-escaping.
+    for c in s.chars() {
+        if c == '"' || c == '\\' {
+            out.push('\\');
         }
+        out.push(c);
+    }
+    out.push('"');
+}
 
-        if !self.is_key || v.contains(' ') {
-            self.output.reserve(2 + v.len());
-            self.output.push('"');
-            self.output.push_str(v);
-            self.output.push('"');
-        } else {
-            self.output.reserve(v.len());
-            self.output.push_str(v);
+/// Renders a compound key: bare if it is a "simple" identifier, otherwise
+/// quoted.
+fn render_key(out: &mut String, key: &str) {
+    let simple = !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'+' | b'-'));
+    if simple {
+        out.push_str(key);
+    } else {
+        quote_string(out, key);
+    }
+}
+
+/// Renders a dynamic [`Value`] into `out`.
+///
+/// `depth` is the number of containers already entered; the two recursive arms
+/// check it against [`MAX_DEPTH`](crate::MAX_DEPTH) before descending, so a
+/// deeply nested `Value` built in memory yields [`Error::MaxDepthExceeded`]
+/// rather than overflowing the stack, mirroring `nbt::io::write_value`. The
+/// bound applies to the writer as well as the parser: a `Value` can be built in
+/// memory to any depth, so encoding is just as exposed as decoding.
+fn render_value(out: &mut String, v: &Value, depth: usize) -> Result<(), Error> {
+    match v {
+        Value::Byte(n) => {
+            out.push_str(&n.to_string());
+            out.push('b');
         }
-        Ok(())
-    }
-
-    fn serialize_some<T>(self, v: &T) -> Result<(), Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        v.serialize(self)
-    }
-
-    fn serialize_none(self) -> Result<(), Error> {
-        self.serialize_unit()
-    }
-
-    fn serialize_bytes(self, v: &[u8]) -> std::result::Result<Self::Ok, Self::Error> {
-        // Raw NBT string payloads (see `RAW_STRING_TOKEN`) are text, so render
-        // them as a quoted, lossily UTF-8 decoded string rather than as a byte
-        // array.
-        if self.force_string {
-            self.force_string = false;
-            return self.serialize_str(&String::from_utf8_lossy(v));
+        Value::Short(n) => {
+            out.push_str(&n.to_string());
+            out.push('s');
         }
-
-        // SNBT renders a byte array as a typed array literal: `[B;1b,2b,3b]`.
-        // Each element is a signed byte with a `b` suffix.
-        self.output.push_str("[B;");
-        for (i, b) in v.iter().enumerate() {
-            if i > 0 {
-                self.output.push(',');
+        Value::Int(n) => out.push_str(&n.to_string()),
+        Value::Long(n) => {
+            out.push_str(&n.to_string());
+            out.push('l');
+        }
+        Value::Float(n) => {
+            out.push_str(&n.to_string());
+            out.push('f');
+        }
+        Value::Double(n) => {
+            out.push_str(&n.to_string());
+            out.push('d');
+        }
+        Value::String(s) => quote_string(out, &s.to_str_lossy()),
+        Value::ByteArray(bytes) => {
+            out.push_str("[B;");
+            for (i, b) in bytes.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&b.cast_signed().to_string());
+                out.push('b');
             }
-            self.output.push_str(&b.cast_signed().to_string());
-            self.output.push('b');
+            out.push(']');
         }
-        self.output.push(']');
-        Ok(())
-    }
-
-    fn serialize_unit(self) -> std::result::Result<Self::Ok, Self::Error> {
-        // Does nothing.
-        Ok(())
-    }
-
-    fn serialize_unit_struct(
-        self,
-        _name: &'static str,
-    ) -> std::result::Result<Self::Ok, Self::Error> {
-        self.serialize_unit()
-    }
-
-    fn serialize_unit_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        variant: &'static str,
-    ) -> std::result::Result<Self::Ok, Self::Error> {
-        self.serialize_str(variant)
-    }
-
-    fn serialize_newtype_struct<T>(
-        self,
-        name: &'static str,
-        value: &T,
-    ) -> std::result::Result<Self::Ok, Self::Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        if name == RAW_STRING_TOKEN {
-            // The wrapped bytes represent an NBT string (e.g. `NbtString`), so
-            // make the upcoming `serialize_bytes` call emit a quoted string.
-            self.force_string = true;
+        Value::IntArray(ints) => {
+            out.push_str("[I;");
+            for (i, n) in ints.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&n.to_string());
+            }
+            out.push(']');
         }
-        value.serialize(self)
+        Value::LongArray(longs) => {
+            out.push_str("[L;");
+            for (i, n) in longs.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&n.to_string());
+                out.push('l');
+            }
+            out.push(']');
+        }
+        Value::List(items) => {
+            check_depth(depth)?;
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                render_value(out, item, depth + 1)?;
+            }
+            out.push(']');
+        }
+        Value::Compound(map) => {
+            check_depth(depth)?;
+            out.push('{');
+            for (i, (k, v)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                render_key(out, &k.to_str_lossy());
+                out.push(':');
+                render_value(out, v, depth + 1)?;
+            }
+            out.push('}');
+        }
+    }
+    Ok(())
+}
+
+/// Renders any `facet`-reflected value into `out`. `depth` carries the same
+/// meaning as in [`render_value`].
+fn render(out: &mut String, peek: Peek, depth: usize) -> Result<(), Error> {
+    let shape = peek.shape();
+
+    if is_value(shape) {
+        return render_value(out, peek.get::<Value>().map_err(reflect_err)?, depth);
     }
 
-    fn serialize_newtype_variant<T>(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _value: &T,
-    ) -> std::result::Result<Self::Ok, Self::Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        Err(Error::Unsupported(Unsupported {
-            op: "serializing newtype enum variants is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
+    // A `bstr::BString` field is a String tag, not a byte array. SNBT is text,
+    // so its raw bytes are rendered lossily, exactly as `Value::String` is.
+    if is_bstring(shape) {
+        let s: &bstr::BString = peek.get::<bstr::BString>().map_err(reflect_err)?;
+        quote_string(out, &s.to_str_lossy());
+        return Ok(());
     }
 
-    fn serialize_seq(
-        self,
-        _len: Option<usize>,
-    ) -> std::result::Result<Self::SerializeSeq, Self::Error> {
-        self.output.push('[');
-        Ok(self)
+    if let Def::Option(_) = shape.def {
+        let opt = peek.into_option().map_err(reflect_err)?;
+        return match opt.value() {
+            Some(inner) => render(out, inner, depth),
+            None => Err(unsupported("cannot serialize a `None` value here")),
+        };
     }
 
-    fn serialize_tuple(
-        self,
-        _len: usize,
-    ) -> std::result::Result<Self::SerializeTuple, Self::Error> {
-        Err(Error::Unsupported(Unsupported {
-            op: "serializing tuples is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
+    if let Some(scalar) = ScalarType::try_from_shape(shape) {
+        return render_scalar(out, peek, scalar);
     }
 
-    fn serialize_tuple_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> std::result::Result<Self::SerializeTupleStruct, Self::Error> {
-        Err(Error::Unsupported(Unsupported {
-            op: "serializing tuple structs is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
+    if matches!(shape.def, Def::List(_) | Def::Array(_) | Def::Slice(_)) {
+        return render_seq(out, peek, depth);
     }
 
-    fn serialize_tuple_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> std::result::Result<Self::SerializeTupleVariant, Self::Error> {
-        Err(Error::Unsupported(Unsupported {
-            op: "serializing tuple enum variants is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
+    if let Def::Map(_) = shape.def {
+        return render_map(out, peek, depth);
     }
 
-    fn serialize_map(
-        self,
-        _len: Option<usize>,
-    ) -> std::result::Result<Self::SerializeMap, Self::Error> {
-        self.output.push('{');
-        Ok(self)
-    }
-
-    fn serialize_struct(
-        self,
-        _name: &'static str,
-        len: usize,
-    ) -> std::result::Result<Self::SerializeStruct, Self::Error> {
-        self.serialize_map(Some(len))
-    }
-
-    fn serialize_struct_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> std::result::Result<Self::SerializeStructVariant, Self::Error> {
-        Err(Error::Unsupported(Unsupported {
-            op: "serializing struct enum variants is not supported",
-            #[cfg(feature = "error-context")]
-            at: self
-                .curr_key
-                .take()
-                .unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
+    match shape.ty {
+        Type::User(UserType::Struct(_)) => render_struct(out, peek, depth),
+        Type::User(UserType::Enum(_)) => {
+            let en = peek.into_enum().map_err(reflect_err)?;
+            let variant = en.active_variant().map_err(reflect_err)?;
+            if variant.data.fields.is_empty() {
+                quote_string(out, variant.name);
+                Ok(())
+            } else {
+                Err(unsupported(
+                    "serializing enums with data (other than `Value`) is not supported",
+                ))
+            }
+        }
+        _ => Err(unsupported("serialization of this type is not supported")),
     }
 }
 
-impl ser::SerializeSeq for &mut Serializer {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_element<T>(&mut self, v: &T) -> Result<(), Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        if !self.output.ends_with('[') {
-            self.output.push(',');
+fn render_scalar(out: &mut String, peek: Peek, scalar: ScalarType) -> Result<(), Error> {
+    match scalar {
+        ScalarType::Bool => out.push_str(if *peek.get::<bool>().map_err(reflect_err)? {
+            "true"
+        } else {
+            "false"
+        }),
+        ScalarType::I8 => {
+            out.push_str(&peek.get::<i8>().map_err(reflect_err)?.to_string());
+            out.push('b');
         }
-
-        v.serialize(&mut **self)
+        ScalarType::U8 => {
+            out.push_str(
+                &peek
+                    .get::<u8>()
+                    .map_err(reflect_err)?
+                    .cast_signed()
+                    .to_string(),
+            );
+            out.push('b');
+        }
+        ScalarType::I16 => {
+            out.push_str(&peek.get::<i16>().map_err(reflect_err)?.to_string());
+            out.push('s');
+        }
+        ScalarType::I32 => out.push_str(&peek.get::<i32>().map_err(reflect_err)?.to_string()),
+        ScalarType::I64 => {
+            out.push_str(&peek.get::<i64>().map_err(reflect_err)?.to_string());
+            out.push('l');
+        }
+        ScalarType::F32 => {
+            out.push_str(&peek.get::<f32>().map_err(reflect_err)?.to_string());
+            out.push('f');
+        }
+        ScalarType::F64 => {
+            out.push_str(&peek.get::<f64>().map_err(reflect_err)?.to_string());
+            out.push('d');
+        }
+        ScalarType::Str | ScalarType::String | ScalarType::CowStr => {
+            let s = peek
+                .as_str()
+                .ok_or_else(|| unsupported("expected a string value"))?;
+            quote_string(out, s);
+        }
+        _ => {
+            return Err(unsupported(
+                "serialization of this scalar type is not supported",
+            ));
+        }
     }
-
-    fn end(self) -> Result<(), Error> {
-        self.output.push(']');
-        Ok(())
-    }
+    Ok(())
 }
 
-impl ser::SerializeMap for &mut Serializer {
-    type Ok = ();
-    type Error = Error;
+fn render_seq(out: &mut String, peek: Peek, depth: usize) -> Result<(), Error> {
+    check_depth(depth)?;
+    let shape = peek.shape();
+    let elem_shape = match shape.def {
+        Def::List(def) => def.t(),
+        Def::Array(def) => def.t(),
+        Def::Slice(def) => def.t(),
+        _ => return Err(unsupported("expected a list, array or slice")),
+    };
+    let list = peek.into_list_like().map_err(reflect_err)?;
+    let id = elem_shape.id;
 
-    fn serialize_key<T>(&mut self, k: &T) -> Result<(), Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        if !self.output.ends_with('{') {
-            self.output.push(',');
+    if id == <u8 as Facet>::SHAPE.id {
+        out.push_str("[B;");
+        for (i, item) in list.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(
+                &item
+                    .get::<u8>()
+                    .map_err(reflect_err)?
+                    .cast_signed()
+                    .to_string(),
+            );
+            out.push('b');
         }
-
-        self.is_key = true;
-        let result = k.serialize(&mut **self);
-        self.is_key = false;
-        result
+        out.push(']');
+    } else if id == <i32 as Facet>::SHAPE.id {
+        out.push_str("[I;");
+        for (i, item) in list.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&item.get::<i32>().map_err(reflect_err)?.to_string());
+        }
+        out.push(']');
+    } else if id == <i64 as Facet>::SHAPE.id {
+        out.push_str("[L;");
+        for (i, item) in list.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&item.get::<i64>().map_err(reflect_err)?.to_string());
+            out.push('l');
+        }
+        out.push(']');
+    } else {
+        out.push('[');
+        for (i, item) in list.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            render(out, item, depth + 1)?;
+        }
+        out.push(']');
     }
-
-    fn serialize_value<T>(&mut self, v: &T) -> Result<(), Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        self.output.push(':');
-        v.serialize(&mut **self)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        self.output.push('}');
-        Ok(())
-    }
+    Ok(())
 }
 
-impl ser::SerializeStruct for &mut Serializer {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_field<T>(&mut self, k: &'static str, v: &T) -> Result<(), Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        if !self.output.ends_with('{') {
-            self.output.push(',');
+fn render_struct(out: &mut String, peek: Peek, depth: usize) -> Result<(), Error> {
+    check_depth(depth)?;
+    let st = peek.into_struct().map_err(reflect_err)?;
+    out.push('{');
+    let mut first = true;
+    for (i, field) in st.ty().fields.iter().enumerate() {
+        let raw = st.field(i).map_err(reflect_err)?;
+        // Skip `None` optional fields.
+        let value = if let Def::Option(_) = raw.shape().def {
+            match raw.into_option().map_err(reflect_err)?.value() {
+                Some(inner) => inner,
+                None => continue,
+            }
+        } else {
+            raw
+        };
+        if !first {
+            out.push(',');
         }
-
-        self.is_key = true;
-        k.serialize(&mut **self)?;
-        self.is_key = false;
-        self.output.push(':');
-        v.serialize(&mut **self)
+        first = false;
+        render_key(out, field.effective_name());
+        out.push(':');
+        render(out, value, depth + 1)?;
     }
+    out.push('}');
+    Ok(())
+}
 
-    fn end(self) -> Result<(), Error> {
-        self.output.push('}');
-        Ok(())
+fn render_map(out: &mut String, peek: Peek, depth: usize) -> Result<(), Error> {
+    check_depth(depth)?;
+    let map = peek.into_map().map_err(reflect_err)?;
+    out.push('{');
+    let mut first = true;
+    for (key, value) in map.iter() {
+        // Skip `None` optional values.
+        let value = if let Def::Option(_) = value.shape().def {
+            match value.into_option().map_err(reflect_err)?.value() {
+                Some(inner) => inner,
+                None => continue,
+            }
+        } else {
+            value
+        };
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        let key_str = key
+            .as_str()
+            .ok_or_else(|| unsupported("map keys must be strings"))?;
+        render_key(out, key_str);
+        out.push(':');
+        render(out, value, depth + 1)?;
     }
+    out.push('}');
+    Ok(())
 }

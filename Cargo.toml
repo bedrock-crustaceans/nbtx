@@ -1,7 +1,7 @@
 [package]
 name = "nbtx"
 description = "A high-performance, ergonomic, pure Rust implementation of the Named Binary Tag format"
-version = "3.0.1"
+version = "4.0.0"
 edition = "2024"
 authors = ["Ruben Adema", "theaddonn <theaddonn@gmail.com>"]
 repository = "https://github.com/bedrock-crustaceans/bedrockrs-nbt"
@@ -12,16 +12,72 @@ all-features = true
 
 [features]
 error-context = []
+nbt = []
 snbt = []
-default = []
+# Preserve compound key insertion order by backing `Value::Compound` with an
+# `IndexMap` instead of a (sorted) `BTreeMap`. On by default because NBT files
+# carry meaningful key order (required for byte-identical round-trips); disable
+# via `--no-default-features` to drop the `indexmap` dependency.
+preserve_order = ["dep:indexmap", "facet/indexmap", "facet-core/indexmap"]
+default = ["nbt", "snbt", "preserve_order"]
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
+facet = { git = "https://github.com/facet-rs/facet", rev = "93e597980313f53ce81d242910adc9bdf34f9665", features = ["bstr"] }
+facet-reflect = { git = "https://github.com/facet-rs/facet", rev = "93e597980313f53ce81d242910adc9bdf34f9665" }
+facet-core = { git = "https://github.com/facet-rs/facet", rev = "93e597980313f53ce81d242910adc9bdf34f9665", features = ["bstr"] }
 paste = "1.0"
 thiserror = "2.0"
 byteorder = "1.5"
-varint-rs = "2.2"
-bstr = { version = "1.0", default-features = false, features = ["std", "serde"] }
+integer-encoding = "4.1"
+bstr = { version = "1.0", default-features = false, features = ["std"] }
+indexmap = { version = "2.2", optional = true }
 
+# Every example exercises the binary NBT codec, so they all require the `nbt`
+# feature (skipped under `--no-default-features`); `snbt` additionally needs the
+# textual codec.
 [[example]]
 name = "hello_world"
+required-features = ["nbt"]
+
+[[example]]
+name = "structs"
+required-features = ["nbt"]
+
+[[example]]
+name = "endianness"
+required-features = ["nbt"]
+
+[[example]]
+name = "value"
+required-features = ["nbt"]
+
+[[example]]
+name = "named_root"
+required-features = ["nbt"]
+
+[[example]]
+name = "non_utf8"
+required-features = ["nbt"]
+
+[[example]]
+name = "unknown_fields"
+required-features = ["nbt"]
+
+[[example]]
+name = "errors"
+required-features = ["nbt"]
+
+[[example]]
+name = "snbt"
+required-features = ["nbt", "snbt"]
+
+[[example]]
+name = "server_dat"
+required-features = ["nbt"]
+
+[[example]]
+name = "in_writer"
+required-features = ["nbt"]
+
+[dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }

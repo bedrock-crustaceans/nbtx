@@ -7,209 +7,141 @@
 #![allow(clippy::enum_glob_use)]
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::missing_errors_doc)]
+// The public error accessors intentionally return `&Option<T>` for a stable API.
+#![allow(clippy::ref_option)]
 // Ensures that docs.rs builds all features and displays which feature flags to use for the types.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use crate::error::TypeOutOfRange;
-pub use crate::nbt::de::{Deserializer, from_be_bytes, from_bytes, from_le_bytes, from_net_bytes};
-pub use crate::nbt::ser::{
-    Serializer, to_be_bytes, to_be_bytes_in, to_bytes, to_bytes_in, to_le_bytes, to_le_bytes_in,
-    to_net_bytes, to_net_bytes_in,
-};
-pub use crate::nbt_byte_array::NbtByteArray;
-pub use crate::nbt_string::NbtString;
-pub use crate::value::Value;
-pub use bstr::{self, BString};
+// Lets `#[facet(nbtx::...)]` resolve inside this crate's own source and tests.
+extern crate self as nbtx;
+
+// `bstr` and `facet` types are deliberately *not* re-exported. Depend on them
+// directly, at the versions nbtx pins (see Cargo.toml), and enable facet's
+// `bstr` feature:
+//
+//     facet = { git = "...", rev = "...", features = ["bstr"] }
+//     bstr  = "1"
+//
+// A re-export would buy nothing. Any crate that derives already needs `facet`
+// as a direct dependency at the same rev — `#[derive(Facet)]` expands to
+// `::facet::`-rooted paths, so `nbtx::Facet` cannot stand in for it — at which
+// point `facet::Facet` is in scope anyway. `BString` is a one-line dependency
+// plus that feature flag, stated explicitly rather than arriving implicitly
+// through nbtx's own feature selection.
+//
+// What re-exporting *would* cost is real: it republishes another crate's items
+// as nbtx's own public API, and `facet` is pinned to a git rev of a pre-1.0
+// release candidate that has already churned its internals during this project.
+//
+// byteorder's `BigEndian`/`LittleEndian` are the exception, and are re-exported
+// below: they are used as generic parameters *in nbtx's own public signatures*
+// (`to_bytes::<BigEndian>`), so they are part of this API by construction.
 pub use byteorder::{BigEndian, LittleEndian};
-
-use std::fmt::{self, Debug, Display};
-
 pub use error::{Error, Result};
 
-#[cfg(test)]
-mod test;
+pub use crate::field_type::FieldType;
+pub use crate::named::Named;
+pub use crate::value::{Compound, Value};
+pub use crate::variant::{EndiannessImpl, Variant, VarintEndian};
 
-mod error;
-mod nbt;
-mod nbt_byte_array;
-mod nbt_string;
+/// Maximum number of nested containers (`List`/`Compound`) the codecs will
+/// encode or decode before giving up with [`Error::MaxDepthExceeded`].
+///
+/// The codecs are recursive, and a few kilobytes of nested `TAG_List` bytes
+/// would otherwise drive them into a stack overflow — which in Rust aborts the
+/// whole process rather than raising a catchable error. 512 is far past anything
+/// a real document needs, while leaving the recursion comfortably inside a
+/// default thread stack even in an unoptimised build.
+pub const MAX_DEPTH: usize = 512;
 
-#[cfg(feature = "snbt")]
-pub mod snbt;
+/// Maximum length, in bytes, of any NBT string: a `String`-tag payload, a
+/// compound key, or a root name.
+///
+/// `i16::MAX`, the largest length the big/little-endian variants' `u16` prefix
+/// can carry without ambiguity. Always enforced on write (an unchecked `as u16`
+/// would wrap the prefix and emit a stream that decodes as something else) and,
+/// on read, for the varint variant, whose length prefix has no natural upper
+/// bound.
+pub const MAX_STRING_LEN: usize = i16::MAX as usize;
+
+// Namespaced `#[facet(nbtx::...)]` extension attributes. `define_attr_grammar!`
+// generates the `Attr` type plus the `__attr!`/`__parse_attr!` dispatcher macros
+// that facet's derive expands `nbtx::<name>` into.
+facet::define_attr_grammar! {
+    ns "nbtx";
+    crate_path ::nbtx;
+
+    /// Container-level `#[facet(nbtx::...)]` attributes understood by nbtx.
+    pub enum Attr {
+        /// Silently skip compound keys that match no field of this struct.
+        ///
+        /// Usage: `#[facet(nbtx::allow_unknown_fields)]`
+        ///
+        /// Unknown keys are an error by default ([`Error::UnknownField`]) so
+        /// that schema drift cannot quietly discard data; this attribute opts a
+        /// single struct back into lenient decoding.
+        ///
+        /// Honoured by **both** codecs: the binary one (`from_*_bytes`) and the
+        /// textual one (`from_string`).
+        AllowUnknownFields,
+    }
+}
+
+/// Builds the "nesting too deep" error. See [`MAX_DEPTH`].
+///
+/// Shared by both codecs, so it lives here rather than in `nbt::io`: the SNBT
+/// parser and writer enforce the same bound as the binary ones and must be
+/// buildable with `--no-default-features --features snbt`.
+#[cfg(any(feature = "nbt", feature = "snbt"))]
+pub(crate) fn max_depth_exceeded() -> Error {
+    Error::MaxDepthExceeded(crate::error::MaxDepthExceeded {
+        max: MAX_DEPTH,
+        #[cfg(feature = "error-context")]
+        at: String::from("unknown"),
+        #[cfg(feature = "error-context")]
+        index: None,
+    })
+}
+
+/// Errors if `depth` (the number of already-entered containers) has reached
+/// [`MAX_DEPTH`]. Call this *before* recursing into a nested container.
+#[cfg(any(feature = "nbt", feature = "snbt"))]
+#[inline]
+pub(crate) fn check_depth(depth: usize) -> std::result::Result<(), Error> {
+    if depth >= MAX_DEPTH {
+        return Err(max_depth_exceeded());
+    }
+    Ok(())
+}
+
+/// Returns `true` if `shape` carries the `#[facet(nbtx::<key>)]` marker.
+#[allow(dead_code)]
+pub(crate) fn has_nbtx_attr(shape: &facet_core::Shape, key: &str) -> bool {
+    shape
+        .attributes
+        .iter()
+        .any(|a| a.ns == Some("nbtx") && a.key == key)
+}
+
+#[cfg(feature = "nbt")]
+pub use crate::nbt::de::{from_be_bytes, from_bytes, from_le_bytes, from_varint_bytes};
+#[cfg(feature = "nbt")]
+pub use crate::nbt::ser::{
+    Serializer, to_be_bytes, to_be_bytes_in, to_bytes, to_bytes_in, to_le_bytes, to_le_bytes_in,
+    to_varint_bytes, to_varint_bytes_in,
+};
+
 #[cfg(feature = "snbt")]
 pub use snbt::{from_string, to_string};
 
+mod error;
+mod field_type;
+mod named;
 mod value;
+mod variant;
 
-mod private {
-    use byteorder::{BigEndian, LittleEndian};
+#[cfg(feature = "nbt")]
+mod nbt;
 
-    use crate::{EndiannessImpl, NetworkLittleEndian, Variant};
-
-    /// Prevents [`VariantImpl`](super::VariantImpl) from being implemented for
-    /// types outside of this crate.
-    pub trait Sealed {}
-
-    impl Sealed for BigEndian {}
-    impl EndiannessImpl for BigEndian {
-        const AS_ENUM: Variant = Variant::BigEndian;
-    }
-
-    impl Sealed for LittleEndian {}
-    impl EndiannessImpl for LittleEndian {
-        const AS_ENUM: Variant = Variant::LittleEndian;
-    }
-
-    impl Sealed for NetworkLittleEndian {}
-    impl EndiannessImpl for NetworkLittleEndian {
-        const AS_ENUM: Variant = Variant::NetworkEndian;
-    }
-}
-
-/// Implemented by all NBT variants.
-pub trait EndiannessImpl: private::Sealed {
-    /// Used to convert a variant to an enum.
-    /// This is used to match generic types in order to prevent
-    /// having to duplicate all deserialisation code three times.
-    const AS_ENUM: Variant;
-}
-
-/// NBT format variant.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum Variant {
-    /// Used by Bedrock for data saved to disk.
-    /// Every data type is written in little endian format.
-    LittleEndian,
-    /// Used by Java.
-    /// Every data types is written in big endian format.
-    BigEndian,
-    /// Used by Bedrock for NBT transferred over the network.
-    /// This format is the same as [`LittleEndian`], except that type lengths
-    /// (such as for strings or lists), are varints instead of shorts.
-    /// The integer and long types are also varints.
-    NetworkEndian,
-}
-
-/// Used by Bedrock for NBT transferred over the network.
-/// This format is the same as [`LittleEndian`], except that type lengths
-/// (such as for strings or lists), are varints instead of shorts.
-/// The integer and long types are also varints.
-pub enum NetworkLittleEndian {}
-
-/// NBT field type
-// Compiler complains about unused enum variants even though they're constructed using a transmute.
-#[allow(dead_code)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[repr(u8)]
-pub enum FieldType {
-    /// Indicates the end of a compound tag.
-    End = 0,
-    /// A signed byte.
-    Byte = 1,
-    /// A signed short.
-    Short = 2,
-    /// A signed int.
-    Int = 3,
-    /// A signed long.
-    Long = 4,
-    /// A float.
-    Float = 5,
-    /// A double.
-    Double = 6,
-    /// An array of byte tags.
-    ByteArray = 7,
-    /// A UTF-8 string.
-    String = 8,
-    /// List of tags.
-    /// Every item in the list must be of the same type.
-    List = 9,
-    /// A key-value map.
-    Compound = 10,
-    /// An array of int tags.
-    IntArray = 11,
-    /// An array of long tags.
-    LongArray = 12,
-}
-
-impl Display for FieldType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use FieldType::*;
-
-        let str = match self {
-            End => "end",
-            Byte => "byte",
-            Short => "short",
-            Int => "int",
-            Long => "long",
-            Float => "float",
-            Double => "double",
-            ByteArray => "byte array",
-            String => "string",
-            List => "list",
-            Compound => "compound",
-            IntArray => "int array",
-            LongArray => "long array",
-        };
-
-        f.write_str(str)
-    }
-}
-
-impl FieldType {
-    pub(crate) fn try_from(
-        v: u8,
-        #[cfg(feature = "error-context")] at: &mut Option<String>,
-        #[cfg(feature = "error-context")] at_index: Option<usize>,
-    ) -> Result<Self> {
-        const LAST_DISC: u8 = FieldType::LongArray as u8;
-        if v > LAST_DISC {
-            return Err(Error::TypeOutOfRange(TypeOutOfRange {
-                found: v,
-
-                #[cfg(feature = "error-context")]
-                at: at.take().unwrap_or_else(|| String::from("unknown")),
-                #[cfg(feature = "error-context")]
-                index: at_index,
-            }));
-        }
-
-        // SAFETY: Because `Self` is marked as `repr(u8)`, its layout is guaranteed to start
-        // with a `u8` discriminant as its first field. Additionally, the raw discriminant is verified
-        // to be in the enum's range.
-        Ok(unsafe { std::mem::transmute::<u8, FieldType>(v) })
-    }
-}
-
-// impl TryFrom<u8> for FieldType {
-//     type Error = Error;
-
-//     fn try_from(v: u8) -> Result<Self> {
-//         const LAST_DISC: u8 = FieldType::LongArray as u8;
-//         if v > LAST_DISC {
-//             return Err(Error::TypeOutOfRange { actual: v });
-//         }
-
-//         // SAFETY: Because `Self` is marked as `repr(u8)`, its layout is guaranteed to start
-//         // with a `u8` discriminant as its first field. Additionally, the raw discriminant is verified
-//         // to be in the enum's range.
-//         Ok(unsafe { std::mem::transmute::<u8, FieldType>(v) })
-//     }
-// }
-
-impl serde::de::Error for Error {
-    fn custom<T>(msg: T) -> Self
-    where
-        T: Display,
-    {
-        Error::Other(msg.to_string())
-    }
-}
-
-impl serde::ser::Error for Error {
-    fn custom<T>(msg: T) -> Self
-    where
-        T: Display,
-    {
-        Error::Other(msg.to_string())
-    }
-}
+#[cfg(feature = "snbt")]
+pub mod snbt;

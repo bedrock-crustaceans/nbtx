@@ -1,303 +1,384 @@
+//! NBT (binary) serialization, driven by `facet` reflection.
+//!
+//! The serializer walks a [`facet_reflect::Peek`] and emits NBT bytes. The NBT
+//! tag of each node is derived from the Rust type:
+//!
+//! * `bool`/`i8`/`u8` → `Byte`, `i16` → `Short`, `i32` → `Int`, `i64` → `Long`,
+//!   `f32` → `Float`, `f64` → `Double`
+//! * `String`/`&str` → `String`
+//! * `Vec<u8>`/`[u8; N]` → `ByteArray`, `Vec<i32>`/`[i32; N]` → `IntArray`,
+//!   `Vec<i64>`/`[i64; N]` → `LongArray`, any other list/array → `List`
+//! * struct/map → `Compound`
+//!
+//! The dynamic [`Value`] type is special-cased: whenever a node's shape is
+//! `Value`, its real Rust value is read via a downcast and encoded directly,
+//! preserving the exact tag of every child (so `ByteArray`/`IntArray`/
+//! `LongArray`/`List` stay distinct) and non-UTF-8 `BString` payloads.
+
 use std::marker::PhantomData;
 
-use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
-use paste::paste;
-use serde::ser::{Impossible, SerializeMap, SerializeSeq, SerializeStruct, SerializeTuple};
-use serde::{Serialize, ser};
-
-use varint_rs::VarintWriter;
+use byteorder::WriteBytesExt;
+use facet::Facet;
+use facet_core::{Def, ScalarType, Shape, Type, UserType};
+use facet_reflect::Peek;
 
 use crate::error::Unsupported;
-use crate::{EndiannessImpl, Error, FieldType, NetworkLittleEndian, Variant};
+use crate::named;
+use crate::nbt::io;
+use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, Value, VarintEndian};
 
-/// Magic newtype-struct name used to signal that the inner bytes should be
-/// written as a raw NBT `String` tag payload (length-prefixed, no UTF-8
-/// validation) rather than as a `ByteArray`.
-///
-/// This mirrors the token pattern used by `serde_bytes`/`fastnbt`: a
-/// [`Serialize`] impl (see [`crate::NbtString`]) emits
-/// `serialize_newtype_struct(RAW_STRING_TOKEN, &bytes)` and this serializer
-/// intercepts that name.
-pub(crate) const RAW_STRING_TOKEN: &str = "__nbtx_raw_string";
-
-macro_rules! unsupported {
-    ($msg:expr, $key:expr) => {
-        Err(Error::Unsupported(Unsupported {
-            op: $msg,
-            #[cfg(feature = "error-context")]
-            at: $key.take().unwrap_or_else(|| String::from("unknown")),
-            #[cfg(feature = "error-context")]
-            index: None,
-        }))
-    };
+fn reflect_err(e: impl std::fmt::Display) -> Error {
+    Error::Other(e.to_string())
 }
 
-/// Returns a `not supported` error.
-macro_rules! forward_unsupported {
-    ($($ty: ident),+) => {
-        paste! {$(
-            fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), Error> {
-                unsupported!(concat!("serialization of `", stringify!($ty), "` is not supported"), self.curr_key)
-            }
-        )+}
+fn unsupported(op: &'static str) -> Error {
+    Error::Unsupported(Unsupported {
+        op,
+        #[cfg(feature = "error-context")]
+        at: String::from("unknown"),
+        #[cfg(feature = "error-context")]
+        index: None,
+    })
+}
+
+/// Returns `true` if the peek's shape is the dynamic [`Value`] type.
+fn is_value(shape: &Shape) -> bool {
+    shape.id == <Value as Facet>::SHAPE.id
+}
+
+/// Returns `true` if the shape is `bstr::BString`/`BStr`. These reflect as a
+/// `Def::List<u8>`, but semantically hold an NBT *string* (raw, possibly
+/// non-UTF-8 bytes), so they must map to the `String` tag rather than
+/// `ByteArray`.
+fn is_bstring(shape: &Shape) -> bool {
+    matches!(shape.type_identifier, "BString" | "BStr")
+}
+
+/// Maps a static element/field shape to an NBT tag, without a concrete value.
+///
+/// Returns `None` for shapes whose tag cannot be known statically (e.g. a
+/// dynamic [`Value`] element), in which case the caller falls back to
+/// `TAG_End` (only relevant for empty lists).
+fn tag_of_shape(shape: &Shape) -> Option<FieldType> {
+    if is_value(shape) {
+        return None;
+    }
+    if is_bstring(shape) {
+        return Some(FieldType::String);
+    }
+    if let Some(scalar) = ScalarType::try_from_shape(shape) {
+        return scalar_tag(scalar);
+    }
+    match shape.def {
+        Def::List(def) => Some(list_tag(def.t())),
+        Def::Array(def) => Some(list_tag(def.t())),
+        Def::Slice(def) => Some(list_tag(def.t())),
+        Def::Map(_) => Some(FieldType::Compound),
+        Def::Option(def) => tag_of_shape(def.t()),
+        _ => match shape.ty {
+            Type::User(UserType::Struct(_)) => Some(FieldType::Compound),
+            _ => None,
+        },
     }
 }
 
-/// Returns a `not supported` error.
-macro_rules! forward_unsupported_field {
-    ($($ty: ident),+) => {
-        paste! {$(
-            fn [<serialize_ $ty>](self, _v: $ty) -> Result<bool, Error> {
-                Err(Error::Unsupported(Unsupported {
-                    op: concat!("serialization of `", stringify!($ty), "` is not supported"),
-                    #[cfg(feature = "error-context")]
-                    at: self.ser.curr_key.take().unwrap_or_else(|| String::from("unknown")),
-                    #[cfg(feature = "error-context")]
-                    index: None
-                }))
-            }
-        )+}
+fn scalar_tag(scalar: ScalarType) -> Option<FieldType> {
+    Some(match scalar {
+        // A bare `u8` is a `Byte` tag, matching `nbt::de::read_scalar` (which
+        // reads one back with `cast_unsigned`) and both halves of the SNBT
+        // codec. Only *bare* scalars: a `Vec<u8>`/`[u8; N]` is a `ByteArray`,
+        // decided by `list_tag` on the element shape, not here.
+        ScalarType::Bool | ScalarType::I8 | ScalarType::U8 => FieldType::Byte,
+        ScalarType::I16 => FieldType::Short,
+        ScalarType::I32 => FieldType::Int,
+        ScalarType::I64 => FieldType::Long,
+        ScalarType::F32 => FieldType::Float,
+        ScalarType::F64 => FieldType::Double,
+        ScalarType::Str | ScalarType::String | ScalarType::CowStr => FieldType::String,
+        _ => return None,
+    })
+}
+
+/// Maps a list/array element shape to the tag of the *containing* sequence.
+fn list_tag(elem: &Shape) -> FieldType {
+    let id = elem.id;
+    if id == <u8 as Facet>::SHAPE.id {
+        FieldType::ByteArray
+    } else if id == <i32 as Facet>::SHAPE.id {
+        FieldType::IntArray
+    } else if id == <i64 as Facet>::SHAPE.id {
+        FieldType::LongArray
+    } else {
+        FieldType::List
     }
 }
 
-/// Serializes the given data in any endian format.
-///
-/// See [`to_bytes_in`] for an alternative that serializes into the given writer, instead
-/// of producing a new one.
-///
-/// # Example
-///
-/// ```rust
-/// # fn main() -> Result<(), nbtx::Error> {
-///  #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbtx::to_bytes::<nbtx::BigEndian>(&data)?;
-/// # Ok(())
-/// # }
-/// ```
-pub fn to_bytes<E>(v: &(impl Serialize + ?Sized)) -> Result<Vec<u8>, Error>
-where
-    E: EndiannessImpl,
-{
-    let mut ser = Serializer::<_, E>::new(Vec::new());
-    v.serialize(&mut ser)?;
-
-    Ok(ser.into_inner())
+/// If `peek` is an `Option`, returns `None` for `None` (a field to skip) and the
+/// inner peek for `Some`. Non-option peeks are returned unchanged.
+fn unwrap_option<'m, 'f>(peek: Peek<'m, 'f>) -> Result<Option<Peek<'m, 'f>>, Error> {
+    if let Def::Option(_) = peek.shape().def {
+        let opt = peek.into_option().map_err(reflect_err)?;
+        Ok(opt.value())
+    } else {
+        Ok(Some(peek))
+    }
 }
 
-/// Serializes the given data in any endian format.
-///
-/// See [`to_bytes`] for an alternative just returns a new buffer, instead of using an existing writer.
-///
-/// # Example
-///
-/// ```rust
-/// # use std::io::Cursor;
-/// # fn main() -> Result<(), nbtx::Error> {
-/// #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let mut writer = Cursor::new(Vec::new());
-///
-///  nbtx::to_bytes_in::<nbtx::BigEndian>(&mut writer, &data)?;
-/// # Ok(())
-/// # }
-/// ```
-pub fn to_bytes_in<E>(
-    writer: &mut impl WriteBytesExt,
-    v: &(impl Serialize + ?Sized),
-) -> Result<(), Error>
-where
-    E: EndiannessImpl,
-{
-    let mut ser = Serializer::<_, E>::new(writer);
-    v.serialize(&mut ser)?;
+/// Determines the NBT tag for a concrete value.
+fn tag_of(peek: Peek) -> Result<FieldType, Error> {
+    let shape = peek.shape();
+    if is_value(shape) {
+        let v: &Value = peek.get::<Value>().map_err(reflect_err)?;
+        return FieldType::try_from(
+            v.discriminant(),
+            #[cfg(feature = "error-context")]
+            &mut None,
+            #[cfg(feature = "error-context")]
+            None,
+        );
+    }
+    if is_bstring(shape) {
+        return Ok(FieldType::String);
+    }
+    if let Some(scalar) = ScalarType::try_from_shape(shape) {
+        return scalar_tag(scalar)
+            .ok_or_else(|| unsupported("serialization of this scalar type is not supported"));
+    }
+    match shape.def {
+        Def::List(def) => Ok(list_tag(def.t())),
+        Def::Array(def) => Ok(list_tag(def.t())),
+        Def::Slice(def) => Ok(list_tag(def.t())),
+        Def::Map(_) => Ok(FieldType::Compound),
+        Def::Option(_) => match unwrap_option(peek)? {
+            Some(inner) => tag_of(inner),
+            None => Err(unsupported("cannot serialize a `None` value here")),
+        },
+        _ => match shape.ty {
+            Type::User(UserType::Struct(_)) => Ok(FieldType::Compound),
+            Type::User(UserType::Enum(_)) => Ok(FieldType::String),
+            _ => Err(unsupported("serialization of this type is not supported")),
+        },
+    }
+}
 
+/// Writes the *payload* of `peek` (the tag byte, if any, is written by the
+/// caller).
+///
+/// `depth` is the number of containers already entered; it is checked against
+/// [`MAX_DEPTH`](crate::MAX_DEPTH) before recursing so that a deeply nested Rust
+/// value fails with an error rather than overflowing the stack.
+fn write_payload<F: EndiannessImpl, W: WriteBytesExt>(
+    w: &mut W,
+    peek: Peek,
+    depth: usize,
+) -> Result<(), Error> {
+    let shape = peek.shape();
+
+    // Dynamic value: encode directly, preserving exact tags and raw bytes.
+    if is_value(shape) {
+        let v: &Value = peek.get::<Value>().map_err(reflect_err)?;
+        return io::write_value::<F, W>(w, v, depth);
+    }
+
+    // `bstr::BString` field: write its raw bytes as a `String` tag payload.
+    if is_bstring(shape) {
+        let s: &bstr::BString = peek.get::<bstr::BString>().map_err(reflect_err)?;
+        return io::write_str_payload::<F, W>(w, s.as_slice());
+    }
+
+    // Options: unwrap `Some` (a lone `None` should have been skipped upstream).
+    if let Def::Option(_) = shape.def {
+        return match unwrap_option(peek)? {
+            Some(inner) => write_payload::<F, W>(w, inner, depth),
+            None => Err(unsupported("cannot serialize a `None` value here")),
+        };
+    }
+
+    if let Some(scalar) = ScalarType::try_from_shape(shape) {
+        return write_scalar::<F, W>(w, peek, scalar);
+    }
+
+    if matches!(shape.def, Def::List(_) | Def::Array(_) | Def::Slice(_)) {
+        return write_seq::<F, W>(w, peek, depth);
+    }
+
+    // Maps and structs → compounds.
+    if let Def::Map(_) = shape.def {
+        return write_map::<F, W>(w, peek, depth);
+    }
+    match shape.ty {
+        Type::User(UserType::Struct(_)) => write_struct::<F, W>(w, peek, depth),
+        Type::User(UserType::Enum(_)) => write_enum::<F, W>(w, peek),
+        _ => Err(unsupported("serialization of this type is not supported")),
+    }
+}
+
+fn write_scalar<F: EndiannessImpl, W: WriteBytesExt>(
+    w: &mut W,
+    peek: Peek,
+    scalar: ScalarType,
+) -> Result<(), Error> {
+    match scalar {
+        ScalarType::Bool => w.write_u8(u8::from(*peek.get::<bool>().map_err(reflect_err)?))?,
+        ScalarType::I8 => w.write_i8(*peek.get::<i8>().map_err(reflect_err)?)?,
+        // The `Byte` tag is a signed 8-bit integer; a `u8` is written by its bit
+        // pattern, which is what `read_scalar`'s `cast_unsigned` reads back.
+        ScalarType::U8 => w.write_u8(*peek.get::<u8>().map_err(reflect_err)?)?,
+        ScalarType::I16 => io::write_i16::<F, W>(w, *peek.get::<i16>().map_err(reflect_err)?)?,
+        ScalarType::I32 => io::write_i32::<F, W>(w, *peek.get::<i32>().map_err(reflect_err)?)?,
+        ScalarType::I64 => io::write_i64::<F, W>(w, *peek.get::<i64>().map_err(reflect_err)?)?,
+        ScalarType::F32 => io::write_f32::<F, W>(w, *peek.get::<f32>().map_err(reflect_err)?)?,
+        ScalarType::F64 => io::write_f64::<F, W>(w, *peek.get::<f64>().map_err(reflect_err)?)?,
+        ScalarType::Str | ScalarType::String | ScalarType::CowStr => {
+            let s = peek
+                .as_str()
+                .ok_or_else(|| unsupported("expected a string value"))?;
+            io::write_str_payload::<F, W>(w, s.as_bytes())?;
+        }
+        _ => {
+            return Err(unsupported(
+                "serialization of this scalar type is not supported",
+            ));
+        }
+    }
     Ok(())
 }
 
-/// Serializes the given data in network little endian format.
-///
-/// This is the format used by Minecraft: Bedrock Edition.
-///
-/// See [`to_net_bytes_in`] for an alternative that serializes into the given writer, instead
-/// of producing a new one.
-///
-/// # Example
-///
-/// ```rust
-/// # fn main() -> Result<(), nbtx::Error> {
-/// #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbtx::to_net_bytes(&data)?;
-/// # Ok(())
-/// # }
-/// ```
-pub fn to_net_bytes<T>(v: &T) -> Result<Vec<u8>, Error>
-where
-    T: ?Sized + Serialize,
-{
-    to_bytes::<NetworkLittleEndian>(v)
+fn write_seq<F: EndiannessImpl, W: WriteBytesExt>(
+    w: &mut W,
+    peek: Peek,
+    depth: usize,
+) -> Result<(), Error> {
+    io::check_depth(depth)?;
+    let shape = peek.shape();
+    let elem_shape = match shape.def {
+        Def::List(def) => def.t(),
+        Def::Array(def) => def.t(),
+        Def::Slice(def) => def.t(),
+        _ => return Err(unsupported("expected a list, array or slice")),
+    };
+    let list = peek.into_list_like().map_err(reflect_err)?;
+    let len = list.len();
+
+    match list_tag(elem_shape) {
+        FieldType::ByteArray => {
+            io::write_seq_len::<F, W>(w, len)?;
+            for item in list.iter() {
+                w.write_u8(*item.get::<u8>().map_err(reflect_err)?)?;
+            }
+        }
+        FieldType::IntArray => {
+            io::write_seq_len::<F, W>(w, len)?;
+            for item in list.iter() {
+                io::write_i32::<F, W>(w, *item.get::<i32>().map_err(reflect_err)?)?;
+            }
+        }
+        FieldType::LongArray => {
+            io::write_seq_len::<F, W>(w, len)?;
+            for item in list.iter() {
+                io::write_i64::<F, W>(w, *item.get::<i64>().map_err(reflect_err)?)?;
+            }
+        }
+        _ => {
+            // A generic `List`: element type tag first, then length, then bodies.
+            let elem_tag = match list.iter().next() {
+                Some(first) => tag_of(first)?,
+                None => tag_of_shape(elem_shape).unwrap_or(FieldType::End),
+            };
+            w.write_u8(elem_tag as u8)?;
+            io::write_seq_len::<F, W>(w, len)?;
+            for item in list.iter() {
+                write_payload::<F, W>(w, item, depth + 1)?;
+            }
+        }
+    }
+    Ok(())
 }
 
-/// Serializes the given data in network little endian format.
-///
-/// This is the format used by Minecraft: Bedrock Edition.
-///
-/// See [`to_net_bytes`] for an alternative just returns a new buffer, instead of using an existing writer.
-///
-/// # Example
-///
-/// ```rust
-/// # use std::io::Cursor;
-/// # fn main() -> Result<(), nbtx::Error> {
-///  #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let mut writer = Cursor::new(Vec::new());
-///
-///  let encoded = nbtx::to_net_bytes_in(&mut writer, &data)?;
-/// # Ok(())
-/// # }
-/// ```
-pub fn to_net_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), Error>
-where
-    W: WriteBytesExt,
-    T: ?Sized + Serialize,
-{
-    to_bytes_in::<NetworkLittleEndian>(writer, v)
+fn write_struct<F: EndiannessImpl, W: WriteBytesExt>(
+    w: &mut W,
+    peek: Peek,
+    depth: usize,
+) -> Result<(), Error> {
+    io::check_depth(depth)?;
+    let st = peek.into_struct().map_err(reflect_err)?;
+    for (i, field) in st.ty().fields.iter().enumerate() {
+        let raw = st.field(i).map_err(reflect_err)?;
+        // Skip `None` optional fields entirely.
+        let Some(value) = unwrap_option(raw)? else {
+            continue;
+        };
+        let tag = tag_of(value)?;
+        w.write_u8(tag as u8)?;
+        io::write_str_payload::<F, W>(w, field.effective_name().as_bytes())?;
+        write_payload::<F, W>(w, value, depth + 1)?;
+    }
+    w.write_u8(FieldType::End as u8)?;
+    Ok(())
 }
 
-/// Serializes the given data in big endian format.
-///
-/// This is the format used by Minecraft: Java Edition.
-///
-/// See [`to_be_bytes_in`] for an alternative that serializes into the given writer, instead
-/// of producing a new one.
-///
-/// # Example
-///
-/// ```rust
-/// # fn main() -> Result<(), nbtx::Error> {
-/// #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbtx::to_be_bytes(&data)?;
-/// # Ok(())
-/// # }
-/// ```
-pub fn to_be_bytes<T>(v: &T) -> Result<Vec<u8>, Error>
-where
-    T: ?Sized + Serialize,
-{
-    to_bytes::<BigEndian>(v)
+fn write_map<F: EndiannessImpl, W: WriteBytesExt>(
+    w: &mut W,
+    peek: Peek,
+    depth: usize,
+) -> Result<(), Error> {
+    io::check_depth(depth)?;
+    let map = peek.into_map().map_err(reflect_err)?;
+    for (key, value) in map.iter() {
+        let Some(value) = unwrap_option(value)? else {
+            continue;
+        };
+        let tag = tag_of(value)?;
+        w.write_u8(tag as u8)?;
+        let key_str = key
+            .as_str()
+            .ok_or_else(|| unsupported("map keys must be strings"))?;
+        io::write_str_payload::<F, W>(w, key_str.as_bytes())?;
+        write_payload::<F, W>(w, value, depth + 1)?;
+    }
+    w.write_u8(FieldType::End as u8)?;
+    Ok(())
 }
 
-/// Serializes the given data in big endian format.
-///
-/// This is the format used by Minecraft: Java Edition.
-///
-/// See [`to_be_bytes`] for an alternative just returns a new buffer, instead of using an existing writer.
-///
-/// # Example
-///
-/// ```rust
-/// # use std::io::Cursor;
-/// # fn main() -> Result<(), nbtx::Error> {
-///  #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let mut writer = Cursor::new(Vec::new());
-///
-///  let encoded = nbtx::to_be_bytes_in(&mut writer, &data)?;
-/// # Ok(())
-/// # }
-/// ```
-pub fn to_be_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), Error>
-where
-    W: WriteBytesExt,
-    T: ?Sized + Serialize,
-{
-    to_bytes_in::<BigEndian>(writer, v)
+fn write_enum<F: EndiannessImpl, W: WriteBytesExt>(w: &mut W, peek: Peek) -> Result<(), Error> {
+    let en = peek.into_enum().map_err(reflect_err)?;
+    let variant = en.active_variant().map_err(reflect_err)?;
+    if variant.data.fields.is_empty() {
+        // Unit variant → String tag payload of the variant name.
+        io::write_str_payload::<F, W>(w, variant.name.as_bytes())?;
+        Ok(())
+    } else {
+        Err(unsupported(
+            "serializing enums with data (other than `Value`) is not supported",
+        ))
+    }
 }
 
-/// Serializes the given data in little endian format.
+/// Writes a complete NBT document (root tag byte, root name, payload).
 ///
-/// This is the format used by Minecraft: Bedrock Edition.
+/// # Root name
 ///
-/// See [`to_be_bytes_in`] for an alternative that serializes into the given writer, instead
-/// of producing a new one.
-///
-/// # Example
-///
-/// ```rust
-/// # fn main() -> Result<(), nbtx::Error> {
-/// #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let encoded = nbtx::to_le_bytes(&data)?;
-/// # Ok(())
-/// # }
-/// ```
-pub fn to_le_bytes<T>(v: &T) -> Result<Vec<u8>, Error>
-where
-    T: ?Sized + Serialize,
-{
-    to_bytes::<LittleEndian>(v)
-}
+/// Always **empty**, for every `T`. Before 4.0 a struct root was written with
+/// its Rust type name, which made the wire format depend on Rust identifiers and
+/// broke interop with other Bedrock tooling. Wrap the value in a
+/// [`Named<T>`](crate::Named) to write a real root name; that is the only case
+/// in which a non-empty one is emitted.
+fn write_root<F: EndiannessImpl, W: WriteBytesExt>(w: &mut W, peek: Peek) -> Result<(), Error> {
+    if let Some(nr) = named::as_named_root(peek.shape()) {
+        let st = peek.into_struct().map_err(reflect_err)?;
+        let name = st.field(nr.name_idx).map_err(reflect_err)?;
+        let name: &bstr::BString = name.get::<bstr::BString>().map_err(reflect_err)?;
+        let value = st.field(nr.value_idx).map_err(reflect_err)?;
+        let tag = tag_of(value)?;
+        w.write_u8(tag as u8)?;
+        io::write_str_payload::<F, W>(w, name.as_slice())?;
+        return write_payload::<F, W>(w, value, 0);
+    }
 
-/// Serializes the given data in little endian format.
-///
-/// This is the format used by Minecraft: Bedrock Edition.
-///
-/// See [`to_le_bytes_in`] for an alternative just returns a new buffer, instead of using an existing writer.
-///
-/// # Example
-///
-/// ```rust
-/// # use std::io::Cursor;
-/// # fn main() -> Result<(), nbtx::Error> {
-///  #[derive(serde::Serialize, serde::Deserialize)]
-///  struct Data {
-///     value: String
-///  }
-///
-///  let data = Data { value: "Hello, World!".to_owned() };
-///  let mut writer = Cursor::new(Vec::new());
-///
-///  let encoded = nbtx::to_le_bytes_in(&mut writer, &data)?;
-/// # Ok(())
-/// # }
-/// ```
-pub fn to_le_bytes_in<T, W>(writer: &mut W, v: &T) -> Result<(), Error>
-where
-    W: WriteBytesExt,
-    T: ?Sized + Serialize,
-{
-    to_bytes_in::<LittleEndian>(writer, v)
+    let tag = tag_of(peek)?;
+    w.write_u8(tag as u8)?;
+    io::write_str_payload::<F, W>(w, b"")?;
+    write_payload::<F, W>(w, peek, 0)
 }
 
 /// NBT data serializer.
@@ -308,14 +389,6 @@ where
     E: EndiannessImpl,
 {
     writer: W,
-    /// Whether this is the first data to be written.
-    /// This makes sure that the name and type of the root compound are written.
-    is_initial: bool,
-    /// Stores the length of the list that is currently being serialised.
-    len: usize,
-    #[cfg(feature = "error-context")]
-    /// The current key that is being serialised.
-    curr_key: Option<String>,
     _marker: PhantomData<E>,
 }
 
@@ -324,867 +397,75 @@ where
     W: WriteBytesExt,
     E: EndiannessImpl,
 {
-    /// Creates a new and empty serializer.
+    /// Creates a new serializer over the given writer.
     #[must_use]
     pub const fn new(w: W) -> Serializer<W, E> {
         Serializer {
             writer: w,
-            is_initial: true,
-            len: 0,
-            #[cfg(feature = "error-context")]
-            curr_key: None,
             _marker: PhantomData,
         }
     }
 
-    /// Consumes the serialiser and returns the inner writer.
+    /// Consumes the serializer and returns the inner writer.
     pub fn into_inner(self) -> W {
         self.writer
     }
 
-    /// Writes an NBT String tag payload: a length prefix (short for the
-    /// little/big endian variants, varint for the network variant) followed by
-    /// the raw bytes. No UTF-8 validation is performed on the bytes.
-    fn write_string_payload(&mut self, v: &[u8]) -> Result<(), Error> {
-        match E::AS_ENUM {
-            Variant::BigEndian => self.writer.write_u16::<BigEndian>(v.len() as u16),
-            Variant::LittleEndian => self.writer.write_u16::<LittleEndian>(v.len() as u16),
-            Variant::NetworkEndian => self.writer.write_u32_varint(v.len() as u32),
-        }?;
-
-        self.writer.write_all(v)?;
-        Ok(())
+    /// Serializes a value into the writer.
+    pub fn serialize<'f, T: Facet<'f> + ?Sized>(&mut self, value: &'f T) -> Result<(), Error> {
+        write_root::<E, W>(&mut self.writer, Peek::new(value))
     }
 }
 
-impl<W, E> ser::Serializer for &mut Serializer<W, E>
-where
-    E: EndiannessImpl,
-    W: WriteBytesExt,
-{
-    type Ok = ();
-    type Error = Error;
+/// Serializes `value` in the given endian format, returning a new buffer.
+pub fn to_bytes<'f, E: EndiannessImpl>(
+    value: &'f (impl Facet<'f> + ?Sized),
+) -> Result<Vec<u8>, Error> {
+    let mut buf = Vec::new();
+    write_root::<E, _>(&mut buf, Peek::new(value))?;
+    Ok(buf)
+}
 
-    type SerializeSeq = Self;
-    type SerializeTuple = Self;
-    type SerializeTupleStruct = Impossible<(), Error>;
-    type SerializeTupleVariant = Impossible<(), Error>;
-    type SerializeMap = Self;
-    type SerializeStruct = Self;
-    type SerializeStructVariant = Impossible<(), Error>;
+/// Serializes `value` in the given endian format into an existing writer.
+pub fn to_bytes_in<'f, E: EndiannessImpl>(
+    writer: &mut impl WriteBytesExt,
+    value: &'f (impl Facet<'f> + ?Sized),
+) -> Result<(), Error> {
+    write_root::<E, _>(writer, Peek::new(value))
+}
 
-    forward_unsupported!(char, u8, u16, u32, u64, u128, i128);
-
-    fn serialize_bool(self, v: bool) -> Result<(), Error> {
-        self.writer.write_u8(v as u8)?;
-        Ok(())
-    }
-
-    fn serialize_i8(self, v: i8) -> Result<(), Error> {
-        self.writer.write_i8(v)?;
-        Ok(())
-    }
-
-    fn serialize_i16(self, v: i16) -> Result<(), Error> {
-        match E::AS_ENUM {
-            Variant::BigEndian => self.writer.write_i16::<BigEndian>(v)?,
-            Variant::LittleEndian | Variant::NetworkEndian => {
-                self.writer.write_i16::<LittleEndian>(v)?;
-            }
+macro_rules! endian_fns {
+    ($to:ident, $to_in:ident, $endian:ty, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $to<'f>(value: &'f (impl Facet<'f> + ?Sized)) -> Result<Vec<u8>, Error> {
+            to_bytes::<$endian>(value)
         }
 
-        Ok(())
-    }
-
-    fn serialize_i32(self, v: i32) -> Result<(), Error> {
-        match E::AS_ENUM {
-            Variant::BigEndian => self.writer.write_i32::<BigEndian>(v)?,
-            Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(v)?,
-            Variant::NetworkEndian => self.writer.write_i32_varint(v)?,
+        #[doc = $doc]
+        pub fn $to_in<'f>(
+            writer: &mut impl WriteBytesExt,
+            value: &'f (impl Facet<'f> + ?Sized),
+        ) -> Result<(), Error> {
+            to_bytes_in::<$endian>(writer, value)
         }
-
-        Ok(())
-    }
-
-    fn serialize_i64(self, v: i64) -> Result<(), Error> {
-        match E::AS_ENUM {
-            Variant::BigEndian => self.writer.write_i64::<BigEndian>(v)?,
-            Variant::LittleEndian => self.writer.write_i64::<LittleEndian>(v)?,
-            Variant::NetworkEndian => self.writer.write_i64_varint(v)?,
-        }
-
-        Ok(())
-    }
-
-    fn serialize_f32(self, v: f32) -> Result<(), Error> {
-        match E::AS_ENUM {
-            Variant::BigEndian => self.writer.write_f32::<BigEndian>(v)?,
-            Variant::LittleEndian | Variant::NetworkEndian => {
-                self.writer.write_f32::<LittleEndian>(v)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn serialize_f64(self, v: f64) -> Result<(), Error> {
-        match E::AS_ENUM {
-            Variant::BigEndian => self.writer.write_f64::<BigEndian>(v)?,
-            Variant::LittleEndian | Variant::NetworkEndian => {
-                self.writer.write_f64::<LittleEndian>(v)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn serialize_str(self, v: &str) -> Result<(), Error> {
-        self.write_string_payload(v.as_bytes())
-    }
-
-    fn serialize_bytes(self, v: &[u8]) -> Result<(), Error> {
-        match E::AS_ENUM {
-            Variant::BigEndian => self.writer.write_i32::<BigEndian>(v.len() as i32),
-            Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(v.len() as i32),
-            Variant::NetworkEndian => self.writer.write_i32_varint(v.len() as i32),
-        }?;
-
-        self.writer.write_all(v)?;
-        Ok(())
-    }
-
-    fn serialize_none(self) -> Result<(), Error> {
-        self.serialize_unit()
-    }
-
-    fn serialize_some<T: Serialize + ?Sized>(self, v: &T) -> Result<(), Error> {
-        v.serialize(self)
-    }
-
-    fn serialize_unit(self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn serialize_unit_struct(self, _name: &'static str) -> Result<(), Error> {
-        self.serialize_unit()
-    }
-
-    fn serialize_unit_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-    ) -> Result<(), Error> {
-        todo!()
-    }
-
-    fn serialize_newtype_struct<T: Serialize + ?Sized>(
-        self,
-        name: &'static str,
-        value: &T,
-    ) -> Result<(), Error> {
-        if name == RAW_STRING_TOKEN {
-            // Write the inner bytes as a raw NBT String payload rather than as a
-            // ByteArray. The inner value is expected to serialize via
-            // `serialize_bytes`/`serialize_str`.
-            value.serialize(RawStringSerializer { ser: self })
-        } else {
-            value.serialize(self)
-        }
-    }
-
-    fn serialize_newtype_variant<T: Serialize + ?Sized>(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _value: &T,
-    ) -> Result<(), Error> {
-        unsupported!(
-            "serializing newtype variants is not supported",
-            self.curr_key
-        )
-    }
-
-    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        if let Some(len) = len {
-            self.len = len;
-            Ok(self)
-        } else {
-            unsupported!(
-                "serializing dynamically sized sequences are not supported",
-                self.curr_key
-            )
-        }
-    }
-
-    fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        self.len = len;
-        Ok(self)
-    }
-
-    fn serialize_tuple_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        unsupported!("serializing tuple structs is not supported", self.curr_key)
-    }
-
-    fn serialize_tuple_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        unsupported!("serializing tuple variants is not supported", self.curr_key)
-    }
-
-    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        // nbt::Value does not distinguish between maps and structs.
-        // Therefore, this is also necessary here
-        if self.is_initial {
-            self.writer.write_u8(FieldType::Compound as u8)?;
-            self.serialize_str("")?;
-            self.is_initial = false;
-        }
-
-        Ok(self)
-    }
-
-    fn serialize_struct(
-        self,
-        name: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeStruct, Self::Error> {
-        if self.is_initial {
-            self.writer.write_u8(FieldType::Compound as u8)?;
-            self.serialize_str(name)?;
-            self.is_initial = false;
-        }
-
-        Ok(self)
-    }
-
-    fn serialize_struct_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        unsupported!(
-            "serializing struct variants is not supported",
-            self.curr_key
-        )
-    }
-
-    fn is_human_readable(&self) -> bool {
-        false
-    }
-}
-
-impl<W, F> SerializeSeq for &mut Serializer<W, F>
-where
-    W: WriteBytesExt,
-    F: EndiannessImpl,
-{
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_element<T>(&mut self, element: &T) -> Result<(), Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        if self.len != 0 {
-            let ty_serializer = FieldTypeSerializer::new(self);
-            element.serialize(ty_serializer)?;
-
-            match F::AS_ENUM {
-                Variant::BigEndian => self.writer.write_i32::<BigEndian>(self.len as i32),
-                Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(self.len as i32),
-                Variant::NetworkEndian => self.writer.write_i32_varint(self.len as i32),
-            }?;
-            self.len = 0;
-        }
-
-        element.serialize(&mut **self)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl<W, M> SerializeTuple for &mut Serializer<W, M>
-where
-    W: WriteBytesExt,
-    M: EndiannessImpl,
-{
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_element<T>(&mut self, element: &T) -> Result<(), Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        if self.len != 0 {
-            let ty_serializer = FieldTypeSerializer::new(self);
-            element.serialize(ty_serializer)?;
-
-            match M::AS_ENUM {
-                Variant::BigEndian => self.writer.write_i32::<BigEndian>(self.len as i32),
-                Variant::LittleEndian => self.writer.write_i32::<LittleEndian>(self.len as i32),
-                Variant::NetworkEndian => self.writer.write_i32_varint(self.len as i32),
-            }?;
-            self.len = 0;
-        }
-
-        element.serialize(&mut **self)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl<W, M> SerializeMap for &mut Serializer<W, M>
-where
-    W: WriteBytesExt,
-    M: EndiannessImpl,
-{
-    type Ok = ();
-    type Error = Error;
-
-    /// Use `serialize_entry` instead.
-    fn serialize_key<K>(&mut self, _key: &K) -> Result<(), Error>
-    where
-        K: ?Sized + Serialize,
-    {
-        unsupported!(
-            "`Serializer::serialize_key` is not supported, use `Serialize::serialize_entry instead`",
-            self.curr_key
-        )
-    }
-
-    /// Use `serialize_entry` instead.
-    fn serialize_value<V>(&mut self, _value: &V) -> Result<(), Error>
-    where
-        V: ?Sized + Serialize,
-    {
-        unsupported!(
-            "`Serializer::serialize_value` is not supported",
-            self.curr_key
-        )
-    }
-
-    fn serialize_entry<K, V>(&mut self, key: &K, value: &V) -> Result<(), Error>
-    where
-        K: ?Sized + Serialize,
-        V: ?Sized + Serialize,
-    {
-        let ty_serializer = FieldTypeSerializer::new(self);
-        value.serialize(ty_serializer)?;
-
-        key.serialize(&mut **self)?;
-        value.serialize(&mut **self)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        self.writer.write_u8(FieldType::End as u8)?;
-        Ok(())
-    }
-}
-
-impl<W, M> SerializeStruct for &mut Serializer<W, M>
-where
-    W: WriteBytesExt,
-    M: EndiannessImpl,
-{
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_field<V>(&mut self, key: &'static str, value: &V) -> Result<(), Error>
-    where
-        V: ?Sized + Serialize,
-    {
-        let ty_serializer = FieldTypeSerializer::new(self);
-        let should_skip = value.serialize(ty_serializer)?;
-
-        if should_skip {
-            Ok(())
-        } else {
-            match M::AS_ENUM {
-                Variant::LittleEndian => self.writer.write_u16::<LittleEndian>(key.len() as u16),
-                Variant::BigEndian => self.writer.write_u16::<BigEndian>(key.len() as u16),
-                Variant::NetworkEndian => self.writer.write_u32_varint(key.len() as u32),
-            }?;
-
-            self.writer.write_all(key.as_bytes())?;
-            value.serialize(&mut **self)
-        }
-    }
-
-    fn end(self) -> Result<(), Error> {
-        self.writer.write_u8(FieldType::End as u8)?;
-        Ok(())
-    }
-}
-
-/// Separate serialiser that writes data types to the writer.
-///
-/// Serde does not provide any type information, hence this exists.
-///
-/// This serialiser writes the data type of the given value and does not consume it.
-struct FieldTypeSerializer<'a, W, F>
-where
-    W: WriteBytesExt,
-    F: EndiannessImpl,
-{
-    ser: &'a mut Serializer<W, F>,
-}
-
-impl<'a, W, F> FieldTypeSerializer<'a, W, F>
-where
-    W: WriteBytesExt,
-    F: EndiannessImpl,
-{
-    pub fn new(ser: &'a mut Serializer<W, F>) -> Self {
-        Self { ser }
-    }
-}
-
-impl<W, F> ser::Serializer for FieldTypeSerializer<'_, W, F>
-where
-    W: WriteBytesExt,
-    F: EndiannessImpl,
-{
-    type Ok = bool; // Whether the field should be skipped
-    type Error = Error;
-    type SerializeSeq = Self;
-    type SerializeTuple = Self;
-    type SerializeTupleStruct = Impossible<bool, Self::Error>;
-    type SerializeTupleVariant = Impossible<bool, Self::Error>;
-    type SerializeMap = Self;
-    type SerializeStruct = Self;
-    type SerializeStructVariant = Impossible<bool, Self::Error>;
-
-    forward_unsupported_field!(char, u8, u16, u32, u64, i128);
-
-    fn serialize_bool(self, _v: bool) -> Result<bool, Self::Error> {
-        self.ser.writer.write_u8(FieldType::Byte as u8)?;
-        Ok(false)
-    }
-
-    fn serialize_i8(self, _v: i8) -> Result<Self::Ok, Self::Error> {
-        self.ser.writer.write_u8(FieldType::Byte as u8)?;
-        Ok(false)
-    }
-
-    fn serialize_i16(self, _v: i16) -> Result<Self::Ok, Self::Error> {
-        self.ser.writer.write_u8(FieldType::Short as u8)?;
-        Ok(false)
-    }
-
-    fn serialize_i32(self, _v: i32) -> Result<Self::Ok, Self::Error> {
-        self.ser.writer.write_u8(FieldType::Int as u8)?;
-        Ok(false)
-    }
-
-    fn serialize_i64(self, _v: i64) -> Result<Self::Ok, Self::Error> {
-        self.ser.writer.write_u8(FieldType::Long as u8)?;
-        Ok(false)
-    }
-
-    fn serialize_f32(self, _v: f32) -> Result<Self::Ok, Self::Error> {
-        self.ser.writer.write_u8(FieldType::Float as u8)?;
-        Ok(false)
-    }
-
-    fn serialize_f64(self, _v: f64) -> Result<Self::Ok, Self::Error> {
-        self.ser.writer.write_u8(FieldType::Double as u8)?;
-        Ok(false)
-    }
-
-    fn serialize_str(self, _v: &str) -> Result<Self::Ok, Self::Error> {
-        self.ser.writer.write_u8(FieldType::String as u8)?;
-        Ok(false)
-    }
-
-    fn serialize_bytes(self, _v: &[u8]) -> Result<Self::Ok, Self::Error> {
-        self.ser.writer.write_u8(FieldType::ByteArray as u8)?;
-        Ok(false)
-    }
-
-    fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
-        Ok(true) // Skip field
-    }
-
-    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<Self::Ok, Self::Error> {
-        value.serialize(self)?;
-        Ok(false)
-    }
-
-    fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
-        unsupported!("serializing units is not supported", self.ser.curr_key)
-    }
-
-    fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
-        unsupported!(
-            "serializing unit structs is not supported",
-            self.ser.curr_key
-        )
-    }
-
-    fn serialize_unit_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-    ) -> Result<Self::Ok, Self::Error> {
-        unsupported!(
-            "serializing unit variants is not supported",
-            self.ser.curr_key
-        )
-    }
-
-    fn serialize_newtype_struct<T: Serialize + ?Sized>(
-        self,
-        name: &'static str,
-        _value: &T,
-    ) -> Result<Self::Ok, Self::Error> {
-        if name == RAW_STRING_TOKEN {
-            // A raw string is written to the stream as a normal String tag.
-            self.ser.writer.write_u8(FieldType::String as u8)?;
-            Ok(false)
-        } else {
-            unsupported!(
-                "serializing newtype structs is not supported",
-                self.ser.curr_key
-            )
-        }
-    }
-
-    fn serialize_newtype_variant<T: Serialize + ?Sized>(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _value: &T,
-    ) -> Result<Self::Ok, Self::Error> {
-        unsupported!(
-            "serializing newtype variants is not supported",
-            self.ser.curr_key
-        )
-    }
-
-    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        self.ser.writer.write_u8(FieldType::List as u8)?;
-        Ok(self)
-    }
-
-    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        self.ser.writer.write_u8(FieldType::List as u8)?;
-        Ok(self)
-    }
-
-    fn serialize_tuple_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        unsupported!(
-            "serializing tuple structs is not supported",
-            self.ser.curr_key
-        )
-    }
-
-    fn serialize_tuple_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        unsupported!(
-            "serializing tuple variants is not supported",
-            self.ser.curr_key
-        )
-    }
-
-    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        self.ser.writer.write_u8(FieldType::Compound as u8)?;
-        Ok(self)
-    }
-
-    fn serialize_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeStruct, Self::Error> {
-        self.ser.writer.write_u8(FieldType::Compound as u8)?;
-        Ok(self)
-    }
-
-    fn serialize_struct_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        unsupported!(
-            "serializing struct variants is not supported",
-            self.ser.curr_key
-        )
-    }
-
-    fn is_human_readable(&self) -> bool {
-        // Mirror the main binary serializer so that self-describing values
-        // (e.g. `Value`) take the binary (raw-string token) path here too.
-        false
-    }
-}
-
-impl<W, F> SerializeSeq for FieldTypeSerializer<'_, W, F>
-where
-    W: WriteBytesExt,
-    F: EndiannessImpl,
-{
-    type Ok = bool;
-    type Error = Error;
-
-    fn serialize_element<T>(&mut self, _element: &T) -> Result<(), Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        Ok(())
-    }
-
-    fn end(self) -> Result<bool, Self::Error> {
-        Ok(false)
-    }
-}
-
-impl<W, F> SerializeTuple for FieldTypeSerializer<'_, W, F>
-where
-    W: WriteBytesExt,
-    F: EndiannessImpl,
-{
-    type Ok = bool;
-    type Error = Error;
-
-    fn serialize_element<T>(&mut self, _element: &T) -> Result<(), Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        Ok(())
-    }
-
-    fn end(self) -> Result<bool, Self::Error> {
-        Ok(false)
-    }
-}
-
-impl<W, F> SerializeMap for FieldTypeSerializer<'_, W, F>
-where
-    W: WriteBytesExt,
-    F: EndiannessImpl,
-{
-    type Ok = bool;
-    type Error = Error;
-
-    fn serialize_key<K>(&mut self, _key: &K) -> Result<(), Error>
-    where
-        K: ?Sized + Serialize,
-    {
-        Ok(())
-    }
-
-    fn serialize_value<V>(&mut self, _value: &V) -> Result<(), Error>
-    where
-        V: ?Sized + Serialize,
-    {
-        Ok(())
-    }
-
-    fn end(self) -> Result<bool, Self::Error> {
-        Ok(false)
-    }
-}
-
-impl<W, F> SerializeStruct for FieldTypeSerializer<'_, W, F>
-where
-    W: WriteBytesExt,
-    F: EndiannessImpl,
-{
-    type Ok = bool;
-    type Error = Error;
-
-    fn serialize_field<V>(&mut self, _key: &'static str, _value: &V) -> Result<(), Error>
-    where
-        V: ?Sized + Serialize,
-    {
-        Ok(())
-    }
-
-    fn end(self) -> Result<bool, Self::Error> {
-        Ok(false)
-    }
-}
-
-/// Serializer used for the payload of a [`RAW_STRING_TOKEN`] newtype struct.
-///
-/// It only accepts a byte or string payload, which it writes as a raw NBT
-/// String tag payload (length prefix + raw bytes, no UTF-8 validation). Every
-/// other serde call is rejected, since the token is only meant to wrap a
-/// byte-string value such as [`bstr::BString`].
-struct RawStringSerializer<'a, W, E>
-where
-    W: WriteBytesExt,
-    E: EndiannessImpl,
-{
-    ser: &'a mut Serializer<W, E>,
-}
-
-/// Returns the `unsupported` error for when the raw-string serializer is
-/// handed a value that is not a byte or string payload.
-macro_rules! raw_string_error {
-    ($self: ident) => {
-        unsupported!(
-            "raw NBT string payload must be serialized via bytes or a string",
-            $self.ser.curr_key
-        )
     };
 }
 
-macro_rules! raw_string_unsupported {
-    ($($ty: ident),+) => {
-        paste! {$(
-            fn [<serialize_ $ty>](self, _v: $ty) -> Result<(), Error> {
-                raw_string_error!(self)
-            }
-        )+}
-    }
-}
-
-impl<W, E> ser::Serializer for RawStringSerializer<'_, W, E>
-where
-    W: WriteBytesExt,
-    E: EndiannessImpl,
-{
-    type Ok = ();
-    type Error = Error;
-
-    type SerializeSeq = Impossible<(), Error>;
-    type SerializeTuple = Impossible<(), Error>;
-    type SerializeTupleStruct = Impossible<(), Error>;
-    type SerializeTupleVariant = Impossible<(), Error>;
-    type SerializeMap = Impossible<(), Error>;
-    type SerializeStruct = Impossible<(), Error>;
-    type SerializeStructVariant = Impossible<(), Error>;
-
-    raw_string_unsupported!(
-        bool, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, f32, f64, char
-    );
-
-    fn serialize_str(self, v: &str) -> Result<(), Error> {
-        self.ser.write_string_payload(v.as_bytes())
-    }
-
-    fn serialize_bytes(self, v: &[u8]) -> Result<(), Error> {
-        self.ser.write_string_payload(v)
-    }
-
-    fn serialize_none(self) -> Result<(), Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<(), Error> {
-        value.serialize(self)
-    }
-
-    fn serialize_unit(self) -> Result<(), Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_unit_struct(self, _name: &'static str) -> Result<(), Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_unit_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-    ) -> Result<(), Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_newtype_struct<T: Serialize + ?Sized>(
-        self,
-        _name: &'static str,
-        value: &T,
-    ) -> Result<(), Error> {
-        value.serialize(self)
-    }
-
-    fn serialize_newtype_variant<T: Serialize + ?Sized>(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _value: &T,
-    ) -> Result<(), Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_tuple_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_tuple_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeStruct, Self::Error> {
-        raw_string_error!(self)
-    }
-
-    fn serialize_struct_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        raw_string_error!(self)
-    }
-}
+endian_fns!(
+    to_be_bytes,
+    to_be_bytes_in,
+    BigEndian,
+    "Serializes `value` in big-endian format (fixed-width big-endian integers)."
+);
+endian_fns!(
+    to_le_bytes,
+    to_le_bytes_in,
+    LittleEndian,
+    "Serializes `value` in little-endian format (Minecraft: Bedrock Edition, disk)."
+);
+endian_fns!(
+    to_varint_bytes,
+    to_varint_bytes_in,
+    VarintEndian,
+    "Serializes `value` in varint little-endian format (Minecraft: Bedrock Edition, network)."
+);

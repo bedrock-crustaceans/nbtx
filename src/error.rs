@@ -6,6 +6,7 @@ use crate::FieldType;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The type tag was out of range.
+#[cfg(feature = "nbt")]
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
     feature = "error-context",
@@ -20,15 +21,18 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct TypeOutOfRange {
     /// The found type
     pub(crate) found: u8,
-    /// The name of the field being serialised/deserialised.
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
     #[cfg(feature = "error-context")]
     pub(crate) at: String,
-    /// The index in in the buffer/string where this error occurred.
-    /// This is none when serialising.
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
     #[cfg(feature = "error-context")]
     pub(crate) index: Option<usize>,
 }
 
+#[cfg(feature = "nbt")]
 impl TypeOutOfRange {
     /// The type that the deserializer found.
     #[inline]
@@ -36,14 +40,16 @@ impl TypeOutOfRange {
         self.found
     }
 
-    /// The struct field at which the error occurred.
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn at(&self) -> &str {
         &self.at
     }
 
-    /// The index into into the buffer/string that the error occurred at.
+    /// The index into the buffer/string that the error occurred at. Always
+    /// `None`: no codec path records a position yet.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn index(&self) -> &Option<usize> {
@@ -66,11 +72,13 @@ pub struct UnexpectedType {
     pub(crate) expected: FieldType,
     /// Type that was found in the NBT stream.
     pub(crate) actual: FieldType,
-    /// The name of the field being serialised/deserialised.
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
     #[cfg(feature = "error-context")]
     pub(crate) at: String,
-    /// The index in in the buffer/string where this error occurred.
-    /// This is none when serialising.
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
     #[cfg(feature = "error-context")]
     pub(crate) index: Option<usize>,
 }
@@ -88,14 +96,16 @@ impl UnexpectedType {
         self.actual
     }
 
-    /// The struct field at which the error occurred.
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn at(&self) -> &str {
         &self.at
     }
 
-    /// The index into the buffer/string at which the error occurred.
+    /// The index into the buffer/string at which the error occurred. Always
+    /// `None`: no codec path records a position yet.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn index(&self) -> &Option<usize> {
@@ -106,28 +116,34 @@ impl UnexpectedType {
 /// The deserializer found an [`End`] tag that was unexpected.
 ///
 /// [`End`]: crate::FieldType::End
+#[cfg(feature = "nbt")]
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(feature = "error-context", error("unexpected end tag found at `{at}`"))]
 #[cfg_attr(not(feature = "error-context"), error("unexpected end tag found"))]
 pub struct UnexpectedEnd {
-    /// The name of the field being serialised/deserialised.
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
     #[cfg(feature = "error-context")]
     pub(crate) at: String,
-    /// The index in in the buffer/string where this error occurred.
-    /// This is none when serialising.
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
     #[cfg(feature = "error-context")]
     pub(crate) index: Option<usize>,
 }
 
+#[cfg(feature = "nbt")]
 impl UnexpectedEnd {
-    /// The struct field at which the error occurred.
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn at(&self) -> &str {
         &self.at
     }
 
-    /// The index into the buffer/string at which the error occurred.
+    /// The index into the buffer/string at which the error occurred. Always
+    /// `None`: no codec path records a position yet.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn index(&self) -> &Option<usize> {
@@ -142,11 +158,13 @@ impl UnexpectedEnd {
 pub struct Unsupported {
     /// Description of the error
     pub(crate) op: &'static str,
-    /// The name of the field being serialised/deserialised.
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
     #[cfg(feature = "error-context")]
     pub(crate) at: String,
-    /// The index in in the buffer/string where this error occurred.
-    /// This is none when serialising.
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
     #[cfg(feature = "error-context")]
     pub(crate) index: Option<usize>,
 }
@@ -158,96 +176,16 @@ impl Unsupported {
         self.op
     }
 
-    /// The struct field at which the error occurred.
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn at(&self) -> &str {
         &self.at
     }
 
-    /// The index into the buffer/string at which the error occurred.
-    #[cfg(feature = "error-context")]
-    #[inline]
-    pub fn index(&self) -> &Option<usize> {
-        &self.index
-    }
-}
-
-/// The deserializer expected a number but did not find it.
-#[derive(Error, Debug, Clone)]
-#[cfg_attr(feature = "error-context", error("expected a valid number at `{at}`"))]
-#[cfg_attr(not(feature = "error-context"), error("expected a valid number"))]
-pub struct ExpectedNumber {
-    /// The name of the field being serialised/deserialised.
-    #[cfg(feature = "error-context")]
-    pub(crate) at: String,
-    /// The index in in the buffer/string where this error occurred.
-    /// This is none when serialising.
-    #[cfg(feature = "error-context")]
-    pub(crate) index: Option<usize>,
-}
-
-impl ExpectedNumber {
-    /// The struct field at which the error occurred.
-    #[cfg(feature = "error-context")]
-    #[inline]
-    pub fn at(&self) -> &str {
-        &self.at
-    }
-
-    /// The index into the buffer/string at which the error occurred.
-    #[cfg(feature = "error-context")]
-    #[inline]
-    pub fn index(&self) -> &Option<usize> {
-        &self.index
-    }
-}
-
-/// The integer that the deserializer tried to parse was too large for its type.
-#[derive(Error, Debug, Clone)]
-#[cfg_attr(
-    feature = "error-context",
-    error("integer `{value}` is too large for type {ty} at `{at}`")
-)]
-#[cfg_attr(
-    not(feature = "error-context"),
-    error("integer `{value}` is too large for type {ty}")
-)]
-pub struct IntegerTooLarge {
-    /// The value that was read.
-    pub(crate) value: String,
-    /// The type of integer that the deserialiser attempted to read.
-    pub(crate) ty: FieldType,
-    /// The name of the field being serialised/deserialised.
-    #[cfg(feature = "error-context")]
-    pub(crate) at: String,
-    /// The index in in the buffer/string where this error occurred.
-    /// This is none when serialising.
-    #[cfg(feature = "error-context")]
-    pub(crate) index: Option<usize>,
-}
-
-impl IntegerTooLarge {
-    /// Returns the string value that was read.
-    #[inline]
-    pub fn value(&self) -> &str {
-        &self.value
-    }
-
-    /// The type of integer that the deserializer was trying to parse.
-    #[inline]
-    pub fn ty(&self) -> FieldType {
-        self.ty
-    }
-
-    /// The struct field at which the error occurred.
-    #[cfg(feature = "error-context")]
-    #[inline]
-    pub fn at(&self) -> &str {
-        &self.at
-    }
-
-    /// The index into the buffer/string at which the error occurred.
+    /// The index into the buffer/string at which the error occurred. Always
+    /// `None`: no codec path records a position yet.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn index(&self) -> &Option<usize> {
@@ -260,24 +198,28 @@ impl IntegerTooLarge {
 #[cfg_attr(feature = "error-context", error("unexpected end of file at `{at}`"))]
 #[cfg_attr(not(feature = "error-context"), error("unexpected end of file"))]
 pub struct UnexpectedEof {
-    /// The name of the field being serialised/deserialised.
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
     #[cfg(feature = "error-context")]
     pub(crate) at: String,
-    /// The index in in the buffer/string where this error occurred.
-    /// This is none when serialising.
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
     #[cfg(feature = "error-context")]
     pub(crate) index: Option<usize>,
 }
 
 impl UnexpectedEof {
-    /// The struct field at which the error occurred.
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn at(&self) -> &str {
         &self.at
     }
 
-    /// The index into the buffer/string at which the error occurred.
+    /// The index into the buffer/string at which the error occurred. Always
+    /// `None`: no codec path records a position yet.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn index(&self) -> &Option<usize> {
@@ -285,7 +227,213 @@ impl UnexpectedEof {
     }
 }
 
+/// The document nested containers more deeply than [`MAX_DEPTH`] allows.
+///
+/// [`MAX_DEPTH`]: crate::MAX_DEPTH
+#[cfg(any(feature = "nbt", feature = "snbt"))]
+#[derive(Error, Debug, Clone)]
+#[cfg_attr(
+    feature = "error-context",
+    error("maximum NBT nesting depth of {max} exceeded at `{at}`")
+)]
+#[cfg_attr(
+    not(feature = "error-context"),
+    error("maximum NBT nesting depth of {max} exceeded")
+)]
+pub struct MaxDepthExceeded {
+    /// The nesting depth limit that was hit.
+    pub(crate) max: usize,
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
+    #[cfg(feature = "error-context")]
+    pub(crate) at: String,
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
+    #[cfg(feature = "error-context")]
+    pub(crate) index: Option<usize>,
+}
+
+#[cfg(any(feature = "nbt", feature = "snbt"))]
+impl MaxDepthExceeded {
+    /// The nesting depth limit that was hit.
+    #[inline]
+    pub fn max(&self) -> usize {
+        self.max
+    }
+
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
+    #[cfg(feature = "error-context")]
+    #[inline]
+    pub fn at(&self) -> &str {
+        &self.at
+    }
+
+    /// The index into the buffer/string at which the error occurred. Always
+    /// `None`: no codec path records a position yet.
+    #[cfg(feature = "error-context")]
+    #[inline]
+    pub fn index(&self) -> &Option<usize> {
+        &self.index
+    }
+}
+
+/// A varint length/integer prefix did not terminate within its maximum byte
+/// count (5 bytes for a 32-bit varint, 10 for a 64-bit one).
+#[cfg(feature = "nbt")]
+#[derive(Error, Debug, Clone)]
+#[cfg_attr(
+    feature = "error-context",
+    error("varint did not terminate after {max_bytes} bytes at `{at}`")
+)]
+#[cfg_attr(
+    not(feature = "error-context"),
+    error("varint did not terminate after {max_bytes} bytes")
+)]
+pub struct InvalidVarint {
+    /// The maximum number of bytes this varint was allowed to occupy.
+    pub(crate) max_bytes: usize,
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
+    #[cfg(feature = "error-context")]
+    pub(crate) at: String,
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
+    #[cfg(feature = "error-context")]
+    pub(crate) index: Option<usize>,
+}
+
+#[cfg(feature = "nbt")]
+impl InvalidVarint {
+    /// The maximum number of bytes this varint was allowed to occupy.
+    #[inline]
+    pub fn max_bytes(&self) -> usize {
+        self.max_bytes
+    }
+
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
+    #[cfg(feature = "error-context")]
+    #[inline]
+    pub fn at(&self) -> &str {
+        &self.at
+    }
+
+    /// The index into the buffer/string at which the error occurred. Always
+    /// `None`: no codec path records a position yet.
+    #[cfg(feature = "error-context")]
+    #[inline]
+    pub fn index(&self) -> &Option<usize> {
+        &self.index
+    }
+}
+
+/// An NBT string (a `String` tag payload, a compound key or a root name) was
+/// longer than [`MAX_STRING_LEN`] bytes.
+///
+/// [`MAX_STRING_LEN`]: crate::MAX_STRING_LEN
+#[cfg(feature = "nbt")]
+#[derive(Error, Debug, Clone)]
+#[cfg_attr(
+    feature = "error-context",
+    error("NBT string of {len} bytes exceeds the maximum of {max} at `{at}`")
+)]
+#[cfg_attr(
+    not(feature = "error-context"),
+    error("NBT string of {len} bytes exceeds the maximum of {max}")
+)]
+pub struct StringTooLong {
+    /// The length that was rejected.
+    pub(crate) len: usize,
+    /// The maximum permitted length.
+    pub(crate) max: usize,
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
+    #[cfg(feature = "error-context")]
+    pub(crate) at: String,
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
+    #[cfg(feature = "error-context")]
+    pub(crate) index: Option<usize>,
+}
+
+#[cfg(feature = "nbt")]
+impl StringTooLong {
+    /// The length that was rejected.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns `true` if the rejected length was zero (never the case in
+    /// practice; present only to satisfy the `len`/`is_empty` convention).
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The maximum permitted length.
+    #[inline]
+    pub fn max(&self) -> usize {
+        self.max
+    }
+
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
+    #[cfg(feature = "error-context")]
+    #[inline]
+    pub fn at(&self) -> &str {
+        &self.at
+    }
+
+    /// The index into the buffer/string at which the error occurred. Always
+    /// `None`: no codec path records a position yet.
+    #[cfg(feature = "error-context")]
+    #[inline]
+    pub fn index(&self) -> &Option<usize> {
+        &self.index
+    }
+}
+
+/// A compound key was found that the target struct has no field for.
+///
+/// Unknown keys are rejected by default so that schema drift cannot silently
+/// discard data. Opt a struct out with `#[facet(nbtx::allow_unknown_fields)]`.
+///
+/// Raised by both codecs — the binary one (`nbt`) and the textual one (`snbt`) —
+/// so it is available whenever either feature is on.
+#[cfg(any(feature = "nbt", feature = "snbt"))]
+#[derive(Error, Debug, Clone)]
+#[error(
+    "unknown field `{field}` while deserializing `{container}` (add `#[facet(nbtx::allow_unknown_fields)]` to skip unknown keys)"
+)]
+pub struct UnknownField {
+    /// The compound key that did not match any field.
+    pub(crate) field: String,
+    /// The name of the struct being deserialised into.
+    pub(crate) container: &'static str,
+}
+
+#[cfg(any(feature = "nbt", feature = "snbt"))]
+impl UnknownField {
+    /// The compound key that did not match any field.
+    #[inline]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// The name of the struct being deserialised into.
+    #[inline]
+    pub fn container(&self) -> &'static str {
+        self.container
+    }
+}
+
 /// An unexpected symbol was encountered by the deserializer.
+#[cfg(feature = "snbt")]
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
     feature = "error-context",
@@ -300,15 +448,18 @@ pub struct UnexpectedSymbol {
     pub(crate) found: char,
     /// The symbol that the deserialiser expected, or `None` if it had no specific expectations.
     pub(crate) expected: Option<char>,
-    /// The name of the field being serialised/deserialised.
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
     #[cfg(feature = "error-context")]
     pub(crate) at: String,
-    /// The index in in the buffer/string where this error occurred.
-    /// This is none when serialising.
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
     #[cfg(feature = "error-context")]
     pub(crate) index: Option<usize>,
 }
 
+#[cfg(feature = "snbt")]
 impl UnexpectedSymbol {
     /// The symbol that the deserializer found.
     #[inline]
@@ -322,14 +473,16 @@ impl UnexpectedSymbol {
         self.expected
     }
 
-    /// The struct field at which the error occurred.
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn at(&self) -> &str {
         &self.at
     }
 
-    /// The index into the buffer/string at which the error occurred.
+    /// The index into the buffer/string at which the error occurred. Always
+    /// `None`: no codec path records a position yet.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn index(&self) -> &Option<usize> {
@@ -337,6 +490,7 @@ impl UnexpectedSymbol {
     }
 }
 
+#[cfg(feature = "snbt")]
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
     feature = "error-context",
@@ -349,15 +503,18 @@ impl UnexpectedSymbol {
 pub struct ParseIntError {
     /// The parsing error itself.
     pub(crate) error: std::num::ParseIntError,
-    /// The name of the field being serialised/deserialised.
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
     #[cfg(feature = "error-context")]
     pub(crate) at: String,
-    /// The index in in the buffer/string where this error occurred.
-    /// This is none when serialising.
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
     #[cfg(feature = "error-context")]
     pub(crate) index: Option<usize>,
 }
 
+#[cfg(feature = "snbt")]
 impl ParseIntError {
     /// Returns the actual parsing error.
     #[inline]
@@ -365,14 +522,16 @@ impl ParseIntError {
         &self.error
     }
 
-    /// The struct field at which the error occurred.
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn at(&self) -> &str {
         &self.at
     }
 
-    /// The index into the buffer/string at which the error occurred.
+    /// The index into the buffer/string at which the error occurred. Always
+    /// `None`: no codec path records a position yet.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn index(&self) -> &Option<usize> {
@@ -380,6 +539,7 @@ impl ParseIntError {
     }
 }
 
+#[cfg(feature = "snbt")]
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
     feature = "error-context",
@@ -392,15 +552,18 @@ impl ParseIntError {
 pub struct ParseFloatError {
     /// The parsing error itself.
     pub(crate) error: std::num::ParseFloatError,
-    /// The name of the field being serialised/deserialised.
+    /// The name of the field being serialised/deserialised, or `"unknown"`
+    /// where the codec has no field context to attach (currently every site
+    /// but the document root).
     #[cfg(feature = "error-context")]
     pub(crate) at: String,
-    /// The index in in the buffer/string where this error occurred.
-    /// This is none when serialising.
+    /// The index in the buffer/string where this error occurred. No codec path
+    /// tracks a position yet, so this is always `None`.
     #[cfg(feature = "error-context")]
     pub(crate) index: Option<usize>,
 }
 
+#[cfg(feature = "snbt")]
 impl ParseFloatError {
     /// Returns the actual parsing error.
     #[inline]
@@ -408,14 +571,16 @@ impl ParseFloatError {
         &self.error
     }
 
-    /// The struct field at which the error occurred.
+    /// The struct field at which the error occurred, or `"unknown"` when the
+    /// codec had no field context to attach.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn at(&self) -> &str {
         &self.at
     }
 
-    /// The index into the buffer/string at which the error occurred.
+    /// The index into the buffer/string at which the error occurred. Always
+    /// `None`: no codec path records a position yet.
     #[cfg(feature = "error-context")]
     #[inline]
     pub fn index(&self) -> &Option<usize> {
@@ -427,30 +592,63 @@ impl ParseFloatError {
 #[derive(Error, Debug, Clone)]
 pub enum Error {
     /// The encountered NBT tag type is invalid.
+    #[cfg(feature = "nbt")]
     #[error(transparent)]
     TypeOutOfRange(TypeOutOfRange),
     /// Found a type different from the type that was expected.
     #[error(transparent)]
     UnexpectedType(UnexpectedType),
+    #[cfg(feature = "nbt")]
     #[error(transparent)]
     UnexpectedEnd(UnexpectedEnd),
     /// The requested operation is not supported.
     #[error(transparent)]
     Unsupported(Unsupported),
-    /// The deserializer expected a number but found something else.
-    #[error(transparent)]
-    ExpectedNumber(ExpectedNumber),
-    /// Integer is too large to fit in the given type
-    #[error(transparent)]
-    IntegerTooLarge(IntegerTooLarge),
     #[error("{0}")]
     Other(String),
+    /// An NBT `List` tag contained elements of more than one tag type.
+    ///
+    /// The wire format stores a single element-type byte for the whole list, so
+    /// a [`Value::List`](crate::Value::List) whose elements do not all share the
+    /// first element's tag cannot be encoded without silently corrupting the
+    /// stream.
+    #[error("heterogeneous NBT list: every element must be {expected}, found {found}")]
+    HeterogeneousList {
+        /// The tag of the first (reference) element.
+        expected: FieldType,
+        /// The first element tag that differed.
+        found: FieldType,
+    },
     #[error(transparent)]
     UnexpectedEof(UnexpectedEof),
+    /// The document nested containers deeper than [`MAX_DEPTH`](crate::MAX_DEPTH).
+    ///
+    /// Raised by both codecs — the binary one (`nbt`) and the textual one
+    /// (`snbt`), on read and on write.
+    #[cfg(any(feature = "nbt", feature = "snbt"))]
+    #[error(transparent)]
+    MaxDepthExceeded(MaxDepthExceeded),
+    /// A varint did not terminate within its permitted byte count.
+    #[cfg(feature = "nbt")]
+    #[error(transparent)]
+    InvalidVarint(InvalidVarint),
+    /// An NBT string exceeded [`MAX_STRING_LEN`](crate::MAX_STRING_LEN) bytes.
+    #[cfg(feature = "nbt")]
+    #[error(transparent)]
+    StringTooLong(StringTooLong),
+    /// A compound key had no matching struct field.
+    ///
+    /// Raised by both codecs (binary and SNBT).
+    #[cfg(any(feature = "nbt", feature = "snbt"))]
+    #[error(transparent)]
+    UnknownField(UnknownField),
+    #[cfg(feature = "snbt")]
     #[error(transparent)]
     UnexpectedSymbol(UnexpectedSymbol),
+    #[cfg(feature = "snbt")]
     #[error(transparent)]
     ParseIntError(ParseIntError),
+    #[cfg(feature = "snbt")]
     #[error(transparent)]
     ParseFloatError(ParseFloatError),
 }
