@@ -428,6 +428,82 @@ impl UnknownField {
     }
 }
 
+/// An enum was used with nbtx without declaring how its variants are written.
+///
+/// Every enum nbtx encodes or decodes must carry the container attribute
+/// `#[facet(nbtx::variant_as(<mode>))]`, where `<mode>` is one of `u8`, `i8`,
+/// `u16`, `i16`, `u32`, `i32`, `u64`, `i64` or `str`. There is no default: the
+/// wire form of an enum is part of a document's schema, so nbtx will not guess
+/// one. See [`variant_as`](crate::Attr::VariantAs) for the full description.
+///
+/// Raised by every codec — the binary one (`nbt`), the textual one (`snbt`) and
+/// [`to_value`](crate::to_value)/[`from_value`](crate::from_value) — the first
+/// time it inspects the enum's shape, so it is always available.
+#[derive(Error, Debug, Clone)]
+#[error(
+    "enum `{container}` has no `#[facet(nbtx::variant_as(...))]` attribute; add one naming the wire form of its variants (`u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`, `i64` or `str`)"
+)]
+pub struct MissingVariantAs {
+    /// The name of the enum that is missing the attribute.
+    pub(crate) container: &'static str,
+}
+
+impl MissingVariantAs {
+    /// The name of the enum that is missing the attribute.
+    #[inline]
+    pub fn container(&self) -> &'static str {
+        self.container
+    }
+}
+
+/// A variant's discriminant does not fit the width its enum declared with
+/// `#[facet(nbtx::variant_as(<mode>))]`.
+///
+/// Truncating it would write a number that decodes as a *different* variant (or
+/// as none at all), so the value is refused instead. Either widen the mode or
+/// renumber the variant.
+#[derive(Error, Debug, Clone)]
+#[error(
+    "discriminant {discriminant} of variant `{container}::{variant}` does not fit `#[facet(nbtx::variant_as({mode}))]`"
+)]
+pub struct DiscriminantOutOfRange {
+    /// The name of the enum the variant belongs to.
+    pub(crate) container: &'static str,
+    /// The name of the variant whose discriminant was out of range.
+    pub(crate) variant: &'static str,
+    /// The discriminant that did not fit.
+    pub(crate) discriminant: i64,
+    /// The declared mode, spelled as it is written in the attribute.
+    pub(crate) mode: &'static str,
+}
+
+impl DiscriminantOutOfRange {
+    /// The name of the enum the variant belongs to.
+    #[inline]
+    pub fn container(&self) -> &'static str {
+        self.container
+    }
+
+    /// The name of the variant whose discriminant was out of range.
+    #[inline]
+    pub fn variant(&self) -> &'static str {
+        self.variant
+    }
+
+    /// The discriminant that did not fit.
+    #[inline]
+    pub fn discriminant(&self) -> i64 {
+        self.discriminant
+    }
+
+    /// The declared mode (`"u8"`, `"i16"`, …), spelled as it is written in the
+    /// attribute.
+    #[inline]
+    pub fn mode(&self) -> &'static str {
+        self.mode
+    }
+}
+
 /// An unexpected symbol was encountered by the deserializer.
 #[cfg(feature = "snbt")]
 #[derive(Error, Debug, Clone)]
@@ -636,6 +712,15 @@ pub enum Error {
     /// Raised by every codec (binary, SNBT and [`from_value`](crate::from_value)).
     #[error(transparent)]
     UnknownField(UnknownField),
+    /// An enum did not declare `#[facet(nbtx::variant_as(...))]`.
+    ///
+    /// Raised by every codec (binary, SNBT and the [`Value`](crate::Value)
+    /// conversion), on read and on write.
+    #[error(transparent)]
+    MissingVariantAs(MissingVariantAs),
+    /// A variant's discriminant did not fit the declared `variant_as` width.
+    #[error(transparent)]
+    DiscriminantOutOfRange(DiscriminantOutOfRange),
     #[cfg(feature = "snbt")]
     #[error(transparent)]
     UnexpectedSymbol(UnexpectedSymbol),

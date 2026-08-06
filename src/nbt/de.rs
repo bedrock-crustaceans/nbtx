@@ -11,6 +11,11 @@
 //!   `Option` fields default to `None`.
 //! * `Vec<T>`/`[T; N]` read `List`, `ByteArray`, `IntArray` or `LongArray`
 //!   tags; a map reads a `Compound`.
+//! * An enum reads the tag its mandatory `#[facet(nbtx::variant_as(<mode>))]`
+//!   declares — a `String` naming the variant (`#[facet(rename = "...")]`-aware)
+//!   or a fixed-width integer holding its discriminant — and errors if the enum
+//!   declared no mode, if the tag is a different one, or if no variant claims
+//!   the number that arrived.
 
 use byteorder::ReadBytesExt;
 use facet::Facet;
@@ -22,7 +27,7 @@ use crate::named;
 use crate::nbt::io;
 // Shared with the SNBT codec and the `Value` conversion; see `crate::reflect`.
 use crate::reflect::{
-    is_bstring, is_value, reflect_err, unexpected_type, unknown_field, unsupported,
+    VariantAs, is_bstring, is_value, reflect_err, unexpected_type, unknown_field, unsupported,
 };
 use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, VarintEndian};
 
@@ -114,21 +119,46 @@ fn read_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
     }
 
     match shape.ty {
-        // A unit enum variant is written as a String tag holding the variant's
-        // name (see `write_enum` in `nbt::ser`); a data-carrying variant is
-        // rejected there and so never appears on the wire. Selecting a
-        // data-carrying variant by name here would still leave its fields
+        // A unit enum variant arrives in whichever form the enum's mandatory
+        // `#[facet(nbtx::variant_as(...))]` declared — its name as a String tag,
+        // or its discriminant as a fixed-width scalar (see `write_enum` in
+        // `nbt::ser`). A data-carrying variant is rejected on write and so never
+        // appears on the wire; selecting one here would still leave its fields
         // unset, which `Partial::build` then reports on its own.
-        Type::User(UserType::Enum(_)) => {
-            if tag != FieldType::String {
-                return Err(unexpected_type(FieldType::String, tag));
-            }
-            let name = io::read_str_payload::<F, R>(r)?;
-            let name = bstr::BStr::new(&name).to_string();
-            p.select_variant_named(&name).map_err(reflect_err)
-        }
+        Type::User(UserType::Enum(_)) => read_enum::<F, R>(p, shape, tag, r),
         _ => Err(unsupported("deserialization of this type is not supported")),
     }
+}
+
+/// Reads a unit enum variant. See [`crate::reflect::VariantAs`] for the modes.
+#[inline(never)]
+fn read_enum<'f, F: EndiannessImpl, R: ReadBytesExt>(
+    p: Part<'f>,
+    shape: &'static Shape,
+    tag: FieldType,
+    r: &mut R,
+) -> Result<Part<'f>, Error> {
+    let mode = VariantAs::of(shape)?;
+    let expected = mode.tag();
+    if tag != expected {
+        return Err(unexpected_type(expected, tag));
+    }
+    if mode == VariantAs::Str {
+        let name = io::read_str_payload::<F, R>(r)?;
+        let name = bstr::BStr::new(&name).to_string();
+        // Rename-aware: `select_variant_named` matches a variant's effective
+        // name, which is what the writer emitted.
+        return p.select_variant_named(&name).map_err(reflect_err);
+    }
+    // The tag types are signed; `widen` reinterprets the bit pattern for the
+    // unsigned modes so that the discriminant comes back as it was written.
+    let raw = match expected {
+        FieldType::Byte => i64::from(io::read_i8(r)?),
+        FieldType::Short => i64::from(io::read_i16::<F, R>(r)?),
+        FieldType::Int => i64::from(io::read_i32::<F, R>(r)?),
+        _ => io::read_i64::<F, R>(r)?,
+    };
+    p.select_variant(mode.widen(raw)).map_err(reflect_err)
 }
 
 #[inline(never)]

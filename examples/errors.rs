@@ -102,13 +102,14 @@ fn main() {
     });
 
     report("a type the codec has no NBT representation for", || {
-        // A *unit* enum variant round-trips fine: it is written as a String tag
-        // holding the variant's name, and read back by matching that name. A
-        // variant carrying data has no such encoding — NBT has no tagged union
-        // — so it is refused rather than flattened into something lossy.
-        // `Value` is the one exception: it is an enum, but the codecs
-        // special-case it.
+        // A *unit* enum variant round-trips fine: it is written in whichever
+        // form `#[facet(nbtx::variant_as(...))]` declares, and read back by
+        // matching that name or discriminant. A variant carrying data has no
+        // such encoding — NBT has no tagged union — so it is refused rather than
+        // flattened into something lossy. `Value` is the one exception: it is an
+        // enum, but the codecs special-case it.
         #[derive(Facet, Debug)]
+        #[facet(nbtx::variant_as(str))]
         #[repr(u8)]
         enum Mode {
             Custom(#[allow(dead_code)] i32),
@@ -121,6 +122,31 @@ fn main() {
             mode: Mode::Custom(7),
         })
         .map(drop)
+    });
+
+    report("an enum that never declared its wire form", || {
+        // `#[facet(nbtx::variant_as(...))]` is mandatory: the shape of an enum
+        // on the wire is part of a document's schema, so nbtx refuses to guess
+        // one rather than let it change under a Rust-side edit.
+        #[derive(Facet, Debug)]
+        #[repr(u8)]
+        enum Undeclared {
+            Survival,
+        }
+        nbtx::to_be_bytes(&Undeclared::Survival).map(drop)
+    });
+
+    report("a discriminant too large for the declared width", || {
+        // `variant_as(u8)` is one byte, and 300 does not fit in one. Truncating
+        // it would write a number that decodes as a *different* variant, so the
+        // value is refused instead.
+        #[derive(Facet, Debug)]
+        #[facet(nbtx::variant_as(u8))]
+        #[repr(u16)]
+        enum Wide {
+            Big = 300,
+        }
+        nbtx::to_be_bytes(&Wide::Big).map(drop)
     });
 
     println!("\nall of the above returned an error; none panicked or aborted.");
@@ -169,6 +195,14 @@ fn detail(err: &Error) -> Option<String> {
             format!("first element is {expected}, a later one is {found}")
         }
         Error::Unsupported(e) => e.operation().to_owned(),
+        Error::MissingVariantAs(e) => format!("enum `{}`", e.container()),
+        Error::DiscriminantOutOfRange(e) => format!(
+            "`{}::{}` is {}, which does not fit `variant_as({})`",
+            e.container(),
+            e.variant(),
+            e.discriminant(),
+            e.mode()
+        ),
         _ => return None,
     })
 }
@@ -186,6 +220,8 @@ fn variant_name(err: &Error) -> &'static str {
         Error::InvalidVarint(_) => "Error::InvalidVarint",
         Error::StringTooLong(_) => "Error::StringTooLong",
         Error::UnknownField(_) => "Error::UnknownField",
+        Error::MissingVariantAs(_) => "Error::MissingVariantAs",
+        Error::DiscriminantOutOfRange(_) => "Error::DiscriminantOutOfRange",
         Error::Other(_) => "Error::Other",
         // Only present when the `snbt` feature is on; the textual codec has its
         // own parse errors.

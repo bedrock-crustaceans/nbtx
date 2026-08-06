@@ -64,6 +64,41 @@ struct ServerEntry {
     accept_textures: Option<bool>,
 }
 
+/// An enum states how its variants are written, and **must**: nbtx has no
+/// default for it, because the wire form of an enum is part of a document's
+/// schema and a default would let a Rust-side edit change it silently.
+///
+/// `variant_as(str)` is the readable form — the variant's name as a `String`
+/// tag — and honours `#[facet(rename = "...")]` on a variant.
+#[derive(Facet, Debug, PartialEq)]
+#[facet(nbtx::variant_as(str))]
+#[repr(u8)]
+enum GameMode {
+    Survival,
+    #[facet(rename = "creative")]
+    Creative,
+}
+
+/// The compact form: the variant's *discriminant* as a fixed-width integer tag.
+/// `u8`/`i8` → `Byte`, `u16`/`i16` → `Short`, `u32`/`i32` → `Int`, `u64`/`i64` →
+/// `Long`. Give the variants explicit numbers to pin the values a document uses;
+/// the wire width is independent of the `#[repr(...)]` Rust needs to store them.
+#[derive(Facet, Debug, PartialEq)]
+#[facet(nbtx::variant_as(u8))]
+#[repr(u8)]
+enum Difficulty {
+    Peaceful = 0,
+    Easy = 1,
+    Normal = 2,
+    Hard = 3,
+}
+
+#[derive(Facet, Debug, PartialEq)]
+struct WorldSettings {
+    game_mode: GameMode,
+    difficulty: Difficulty,
+}
+
 fn main() -> Result<(), nbtx::Error> {
     let every = EveryTag {
         a_bool: true,
@@ -155,13 +190,31 @@ fn main() -> Result<(), nbtx::Error> {
     let decoded: Block = nbtx::from_be_bytes(&mut encoded.as_slice())?;
     println!("\ndynamic keys via a map field: {decoded:?}");
 
+    // An enum field: one written as text, one as a number, in the same struct.
+    let settings = WorldSettings {
+        game_mode: GameMode::Creative,
+        difficulty: Difficulty::Hard,
+    };
+    let encoded = nbtx::to_be_bytes(&settings)?;
+    let inspected: Value = nbtx::from_be_bytes(&mut encoded.as_slice())?;
+    println!("\nenum fields, in the form each one declared:");
+    for (key, value) in inspected.as_compound().expect("a struct is a compound") {
+        println!(
+            "  {key:<12} tag {:>2}  {:<9} {value:?}",
+            value.discriminant(),
+            tag_name(value)
+        );
+    }
+    let decoded: WorldSettings = nbtx::from_be_bytes(&mut encoded.as_slice())?;
+    assert_eq!(decoded, settings);
+
     println!("\nwhat a derived struct cannot express:");
     // Both of these fields are `Vec<i32>` in Rust, so both come back as an
     // `IntArray`. The distinction between a `List` of `Int`s (tag 9) and an
     // `IntArray` (tag 11) survives only through `Value`.
     println!("  * `List` of `Int` vs `IntArray` — both are `Vec<i32>`");
     println!("  * enums carrying data — unsupported; unit variants do round-trip,");
-    println!("    encoded as a `String` tag holding the variant name");
+    println!("    in whichever form `#[facet(nbtx::variant_as(...))]` declares");
     println!("  * a `String` field rejects non-UTF-8 bytes — use `bstr::BString`");
     println!("    (see `examples/non_utf8.rs`)");
 

@@ -73,6 +73,7 @@ macro_rules! assert_matches_binary {
 // --- the full tag table -----------------------------------------------------
 
 #[derive(Facet, Debug, Clone, PartialEq)]
+#[facet(nbtx::variant_as(str))]
 #[repr(u8)]
 enum Mode {
     Survival,
@@ -752,6 +753,7 @@ fn heterogeneous_list_rejected_by_to_bytes_unlike_to_value() {
 #[test]
 fn types_without_an_nbt_representation_are_refused() {
     #[derive(Facet)]
+    #[facet(nbtx::variant_as(str))]
     #[repr(u8)]
     #[allow(dead_code)]
     enum WithData {

@@ -284,6 +284,7 @@ fn servers_dat_struct_decode() {
 #[test]
 fn unit_enum_field_roundtrips() {
     #[derive(Facet, Debug, Clone, PartialEq)]
+    #[facet(nbtx::variant_as(str))]
     #[repr(u8)]
     enum Mode {
         Survival,

@@ -9,6 +9,11 @@
 //! * `Vec<u8>`/`[u8; N]` → `ByteArray`, `Vec<i32>`/`[i32; N]` → `IntArray`,
 //!   `Vec<i64>`/`[i64; N]` → `LongArray`, any other list/array → `List`
 //! * struct/map → `Compound`
+//! * a unit enum variant → whatever its mandatory
+//!   `#[facet(nbtx::variant_as(<mode>))]` declares: its (rename-aware) name as a
+//!   `String`, or its discriminant as a `Byte`/`Short`/`Int`/`Long`. See
+//!   [`VariantAs`](crate::reflect::VariantAs); an enum without the attribute is
+//!   an [`Error::MissingVariantAs`](crate::Error::MissingVariantAs).
 //!
 //! The dynamic [`Value`] type is special-cased: whenever a node's shape is
 //! `Value`, its real Rust value is read via a downcast and encoded directly,
@@ -27,7 +32,8 @@ use crate::nbt::io;
 // The type→tag convention and the error constructors are shared with the SNBT
 // codec and the `Value` conversion, so they live in `crate::reflect`.
 use crate::reflect::{
-    is_bstring, is_value, list_tag, reflect_err, scalar_tag, unsupported, unwrap_option, value_tag,
+    EnumWire, enum_tag, enum_wire, is_bstring, is_value, list_tag, reflect_err, scalar_tag,
+    unsupported, unwrap_option, value_tag,
 };
 use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, Value, VarintEndian};
 
@@ -54,6 +60,11 @@ fn tag_of_shape(shape: &Shape) -> Option<FieldType> {
         Def::Option(def) => tag_of_shape(def.t()),
         _ => match shape.ty {
             Type::User(UserType::Struct(_)) => Some(FieldType::Compound),
+            // An enum's tag follows from its declared `variant_as` mode alone.
+            // A missing/invalid one is not reported here — this is the
+            // best-effort path for the element type of an *empty* list, and the
+            // real error surfaces the moment a value is written.
+            Type::User(UserType::Enum(_)) => enum_tag(shape).ok(),
             _ => None,
         },
     }
@@ -84,7 +95,7 @@ fn tag_of(peek: Peek) -> Result<FieldType, Error> {
         },
         _ => match shape.ty {
             Type::User(UserType::Struct(_)) => Ok(FieldType::Compound),
-            Type::User(UserType::Enum(_)) => Ok(FieldType::String),
+            Type::User(UserType::Enum(_)) => enum_tag(shape),
             _ => Err(unsupported("serialization of this type is not supported")),
         },
     }
@@ -269,18 +280,21 @@ fn write_map<F: EndiannessImpl, W: WriteBytesExt>(
     Ok(())
 }
 
+/// Writes a unit enum variant, in whichever form its
+/// `#[facet(nbtx::variant_as(...))]` declared: its (rename-aware) name as a
+/// `String` payload, or its discriminant as a `Byte`/`Short`/`Int`/`Long` of the
+/// declared width. The mode itself is resolved in [`crate::reflect`], shared
+/// with the SNBT writer and the `Value` conversion.
 fn write_enum<F: EndiannessImpl, W: WriteBytesExt>(w: &mut W, peek: Peek) -> Result<(), Error> {
-    let en = peek.into_enum().map_err(reflect_err)?;
-    let variant = en.active_variant().map_err(reflect_err)?;
-    if variant.data.fields.is_empty() {
-        // Unit variant → String tag payload of the variant name.
-        io::write_str_payload::<F, W>(w, variant.name.as_bytes())?;
-        Ok(())
-    } else {
-        Err(unsupported(
-            "serializing enums with data (other than `Value`) is not supported",
-        ))
+    match enum_wire(peek)? {
+        EnumWire::Name(name) => io::write_str_payload::<F, W>(w, name.as_bytes())?,
+        EnumWire::Int(FieldType::Byte, v) => w.write_i8(v as i8)?,
+        EnumWire::Int(FieldType::Short, v) => io::write_i16::<F, W>(w, v as i16)?,
+        EnumWire::Int(FieldType::Int, v) => io::write_i32::<F, W>(w, v as i32)?,
+        // `enum_wire` only ever answers with these four tags.
+        EnumWire::Int(_, v) => io::write_i64::<F, W>(w, v)?,
     }
+    Ok(())
 }
 
 /// Writes a complete NBT document (root tag byte, root name, payload).

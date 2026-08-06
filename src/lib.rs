@@ -84,6 +84,54 @@ facet::define_attr_grammar! {
         /// Honoured by **both** codecs: the binary one (`from_*_bytes`) and the
         /// textual one (`from_string`).
         AllowUnknownFields,
+
+        /// **Mandatory on every enum**: how this enum's variants are written.
+        ///
+        /// Usage: `#[facet(nbtx::variant_as(<mode>))]`, where `<mode>` is one of
+        /// the bare type names `u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`,
+        /// `i64` or `str`.
+        ///
+        /// ```
+        /// use facet::Facet;
+        ///
+        /// #[derive(Facet)]
+        /// #[facet(nbtx::variant_as(str))]
+        /// #[repr(u8)]
+        /// enum Mode {
+        ///     Survival,
+        ///     #[facet(rename = "creative")]
+        ///     Creative,
+        /// }
+        ///
+        /// #[derive(Facet)]
+        /// #[facet(nbtx::variant_as(u8))]
+        /// #[repr(u8)]
+        /// enum Difficulty {
+        ///     Peaceful = 0,
+        ///     Hard = 3,
+        /// }
+        /// ```
+        ///
+        /// * `str` writes the variant's name as a `String` tag, honouring
+        ///   `#[facet(rename = "...")]` on the variant.
+        /// * The eight integer modes write the *active variant's discriminant*
+        ///   as a fixed-width NBT scalar: `u8`/`i8` → `Byte`, `u16`/`i16` →
+        ///   `Short`, `u32`/`i32` → `Int`, `u64`/`i64` → `Long`. Number the
+        ///   variants with plain Rust discriminants (`Hard = 3`) to pin the
+        ///   values a document uses.
+        ///
+        /// The mode is a *wire* choice and is independent of the `#[repr(...)]`
+        /// that gives the enum its Rust layout (facet's derive requires one of
+        /// those regardless). `usize`/`isize` are deliberately not accepted:
+        /// their width varies by target.
+        ///
+        /// There is no default. An enum without this attribute is an
+        /// [`Error::MissingVariantAs`] from every codec — the binary one
+        /// (`to_*_bytes`/`from_*_bytes`), the textual one
+        /// (`to_string`/`from_string`) and [`to_value`]/[`from_value`] alike.
+        /// The wire form of an enum is part of a document's schema, and a silent
+        /// default would let it change under a Rust-side edit.
+        VariantAs(shape_type),
     }
 }
 

@@ -302,6 +302,7 @@ fn heterogeneous_list_names_the_expected_and_offending_tags() {
 #[test]
 fn unsupported_describes_the_operation_it_refused() {
     #[derive(facet::Facet, Debug)]
+    #[facet(nbtx::variant_as(str))]
     #[repr(u8)]
     #[allow(dead_code)]
     enum WithData {
@@ -459,6 +460,47 @@ fn max_depth_exceeded_is_the_same_variant_in_snbt() {
     match nbtx::from_string::<Value>(&input).expect_err("must reject") {
         Error::MaxDepthExceeded(e) => assert_eq!(e.max(), nbtx::MAX_DEPTH),
         other => panic!("expected MaxDepthExceeded, got {other:?}"),
+    }
+}
+
+/// `MissingVariantAs` names the enum that never declared how its variants are
+/// written, and its message points at the attribute that fixes it. Raised by
+/// every codec, so this checks the feature-independent conversion.
+#[test]
+fn missing_variant_as_names_the_enum_and_the_attribute() {
+    #[derive(facet::Facet, Debug)]
+    #[repr(u8)]
+    enum Undeclared {
+        Survival,
+    }
+    match nbtx::to_value(&Undeclared::Survival).expect_err("an undeclared enum must be refused") {
+        Error::MissingVariantAs(e) => {
+            assert_eq!(e.container(), "Undeclared");
+            let msg = e.to_string();
+            assert!(msg.contains("nbtx::variant_as"), "{msg}");
+        }
+        other => panic!("expected MissingVariantAs, got {other:?}"),
+    }
+}
+
+/// `DiscriminantOutOfRange` carries every part of the mismatch: which variant,
+/// what number it holds, and the width it was asked to fit in.
+#[test]
+fn discriminant_out_of_range_reports_the_variant_and_the_width() {
+    #[derive(facet::Facet, Debug)]
+    #[facet(nbtx::variant_as(i8))]
+    #[repr(i16)]
+    enum TooWide {
+        Big = 1000,
+    }
+    match nbtx::to_value(&TooWide::Big).expect_err("a discriminant that does not fit is refused") {
+        Error::DiscriminantOutOfRange(e) => {
+            assert_eq!(e.container(), "TooWide");
+            assert_eq!(e.variant(), "Big");
+            assert_eq!(e.discriminant(), 1000);
+            assert_eq!(e.mode(), "i8");
+        }
+        other => panic!("expected DiscriminantOutOfRange, got {other:?}"),
     }
 }
 

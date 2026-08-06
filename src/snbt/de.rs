@@ -10,7 +10,9 @@
 //!
 //! Struct targets follow the binary codec's rules: a compound key that matches
 //! no field is an [`Error::UnknownField`] unless the struct carries
-//! `#[facet(nbtx::allow_unknown_fields)]`.
+//! `#[facet(nbtx::allow_unknown_fields)]`. Enum targets do too: the mandatory
+//! `#[facet(nbtx::variant_as(<mode>))]` decides whether a variant is read from a
+//! string naming it or from an integer literal holding its discriminant.
 
 use crate::value::Compound;
 use bstr::BString;
@@ -20,8 +22,8 @@ use facet_reflect::Partial;
 
 use crate::error::{ParseFloatError, ParseIntError, UnexpectedEof, UnexpectedSymbol};
 // Shared with the binary codec and the `Value` conversion; see `crate::reflect`.
-use crate::reflect::{is_bstring, is_value, reflect_err, unknown_field, unsupported};
-use crate::{Error, Value, check_depth};
+use crate::reflect::{VariantAs, is_bstring, is_value, reflect_err, unknown_field, unsupported};
+use crate::{Error, FieldType, Value, check_depth};
 
 type Part<'f> = Partial<'f, true>;
 
@@ -437,12 +439,36 @@ impl<'a> Deserializer<'a> {
 
         match shape.ty {
             Type::User(UserType::Struct(_)) => self.parse_struct_into(p, shape, depth),
-            Type::User(UserType::Enum(_)) => {
-                let name = self.read_string()?;
-                p.select_variant_named(&name).map_err(reflect_err)
-            }
+            Type::User(UserType::Enum(_)) => self.parse_enum_into(p, shape),
             _ => Err(unsupported("deserialization of this type is not supported")),
         }
+    }
+
+    /// Parses a unit enum variant, in whichever form the enum's mandatory
+    /// `#[facet(nbtx::variant_as(...))]` declared: a string holding its
+    /// (rename-aware) name, or a suffixed integer literal holding its
+    /// discriminant. See [`crate::reflect::VariantAs`].
+    fn parse_enum_into<'f>(
+        &mut self,
+        p: Part<'f>,
+        shape: &'static Shape,
+    ) -> Result<Part<'f>, Error> {
+        let mode = VariantAs::of(shape)?;
+        if mode == VariantAs::Str {
+            let name = self.read_string()?;
+            return p.select_variant_named(&name).map_err(reflect_err);
+        }
+        // Read at the width of the tag the mode uses, exactly as a scalar field
+        // of that tag would be read, then reinterpret the bit pattern for the
+        // unsigned modes.
+        let tok = self.read_token()?;
+        let raw = match mode.tag() {
+            FieldType::Byte => i64::from(parse_int::<i8>(self, tok)?),
+            FieldType::Short => i64::from(parse_int::<i16>(self, tok)?),
+            FieldType::Int => i64::from(parse_int::<i32>(self, tok)?),
+            _ => parse_int::<i64>(self, tok)?,
+        };
+        p.select_variant(mode.widen(raw)).map_err(reflect_err)
     }
 
     fn parse_scalar_into<'f>(

@@ -722,12 +722,14 @@ fn snbt_unknown_key_denial_does_not_apply_to_maps() {
 #[test]
 fn unit_enum_variants_are_matched_by_name_not_by_position() {
     #[derive(Facet, Debug, PartialEq)]
+    #[facet(nbtx::variant_as(str))]
     #[repr(u8)]
     enum First {
         Survival,
         Creative,
     }
     #[derive(Facet, Debug, PartialEq)]
+    #[facet(nbtx::variant_as(str))]
     #[repr(u8)]
     enum Reordered {
         Creative,
@@ -759,6 +761,7 @@ fn unit_enum_variants_are_matched_by_name_not_by_position() {
 #[test]
 fn an_unknown_enum_variant_name_is_rejected() {
     #[derive(Facet, Debug, PartialEq)]
+    #[facet(nbtx::variant_as(str))]
     #[repr(u8)]
     enum Mode {
         Survival,
@@ -780,6 +783,7 @@ fn an_unknown_enum_variant_name_is_rejected() {
 #[test]
 fn an_enum_field_requires_a_string_tag() {
     #[derive(Facet, Debug, PartialEq)]
+    #[facet(nbtx::variant_as(str))]
     #[repr(u8)]
     enum Mode {
         Survival,
@@ -1024,6 +1028,7 @@ fn a_bare_u8_field_encodes_as_a_byte_tag() {
 #[test]
 fn one_struct_covering_every_supported_field_shape() {
     #[derive(Facet, Debug, PartialEq)]
+    #[facet(nbtx::variant_as(str))]
     #[repr(u8)]
     enum Mode {
         Creative,

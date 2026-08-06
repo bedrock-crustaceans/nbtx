@@ -10,6 +10,10 @@
 //! * `Vec<u8>`/`ByteArray` → `[B;1b,2b,..]`, `Vec<i32>`/`IntArray` →
 //!   `[I;1,2,..]`, `Vec<i64>`/`LongArray` → `[L;1l,2l,..]`, other lists → `[..]`
 //! * struct/map/`Compound` → `{k:v,..}`
+//! * a unit enum variant → whatever its mandatory
+//!   `#[facet(nbtx::variant_as(<mode>))]` declares: its (rename-aware) name as a
+//!   quoted string, or its discriminant as an integer literal carrying the
+//!   suffix of the tag that would hold it (`2b`, `2s`, `2`, `2l`)
 
 use bstr::ByteSlice;
 use facet::Facet;
@@ -19,8 +23,8 @@ use facet_reflect::Peek;
 // A `BString`/`BStr` renders as a quoted string rather than a `[B;..]`
 // byte-array literal, and a `Value` is detected by shape id: the same rules the
 // binary codec applies, shared from `crate::reflect` so the two cannot drift.
-use crate::reflect::{is_bstring, is_value, reflect_err, unsupported};
-use crate::{Error, Value, check_depth};
+use crate::reflect::{EnumWire, enum_wire, is_bstring, is_value, reflect_err, unsupported};
+use crate::{Error, FieldType, Value, check_depth};
 
 /// Serializes `value` into an SNBT string.
 pub fn to_string<'f, T: Facet<'f> + ?Sized>(value: &'f T) -> Result<String, Error> {
@@ -215,20 +219,34 @@ fn render(out: &mut String, peek: Peek, depth: usize) -> Result<(), Error> {
 
     match shape.ty {
         Type::User(UserType::Struct(_)) => render_struct(out, peek, depth),
-        Type::User(UserType::Enum(_)) => {
-            let en = peek.into_enum().map_err(reflect_err)?;
-            let variant = en.active_variant().map_err(reflect_err)?;
-            if variant.data.fields.is_empty() {
-                quote_string(out, variant.name);
-                Ok(())
-            } else {
-                Err(unsupported(
-                    "serializing enums with data (other than `Value`) is not supported",
-                ))
-            }
-        }
+        Type::User(UserType::Enum(_)) => render_enum(out, peek),
         _ => Err(unsupported("serialization of this type is not supported")),
     }
+}
+
+/// Renders a unit enum variant in whichever form its mandatory
+/// `#[facet(nbtx::variant_as(...))]` declared.
+///
+/// `str` mode writes the variant's (rename-aware) name as a quoted string; an
+/// integer mode writes its discriminant with the type suffix of the tag that
+/// carries it — `b` for `u8`/`i8`, `s` for `u16`/`i16`, none for `u32`/`i32`,
+/// `l` for `u64`/`i64` — so the literal is indistinguishable from a plain
+/// `Byte`/`Short`/`Int`/`Long` scalar of the same value, and reads back as one.
+fn render_enum(out: &mut String, peek: Peek) -> Result<(), Error> {
+    match enum_wire(peek)? {
+        EnumWire::Name(name) => quote_string(out, name),
+        EnumWire::Int(tag, v) => {
+            out.push_str(&v.to_string());
+            match tag {
+                FieldType::Byte => out.push('b'),
+                FieldType::Short => out.push('s'),
+                FieldType::Int => {}
+                // `enum_wire` only ever answers with these four tags.
+                _ => out.push('l'),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn render_scalar(out: &mut String, peek: Peek, scalar: ScalarType) -> Result<(), Error> {

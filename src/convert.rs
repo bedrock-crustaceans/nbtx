@@ -18,8 +18,8 @@ use facet_core::{Def, ScalarType, Shape, Type, UserType};
 use facet_reflect::{Partial, Peek};
 
 use crate::reflect::{
-    is_bstring, is_value, list_tag, reflect_err, scalar_tag, unexpected_type, unknown_field,
-    unsupported, unwrap_option, value_tag,
+    EnumWire, VariantAs, enum_wire, is_bstring, is_value, list_tag, reflect_err, scalar_tag,
+    unexpected_type, unknown_field, unsupported, unwrap_option, value_tag,
 };
 use crate::{Compound, Error, FieldType, Value, check_depth};
 
@@ -45,7 +45,10 @@ type Part<'f> = Partial<'f, true>;
 /// * `String`/`&str`/[`bstr::BString`] → `String`
 /// * `Vec<u8>`/`[u8; N]` → `ByteArray`, `Vec<i32>` → `IntArray`, `Vec<i64>` →
 ///   `LongArray`, any other list/array → `List`
-/// * struct/map → `Compound`, and a unit enum variant → `String` of its name
+/// * struct/map → `Compound`
+/// * a unit enum variant → whatever its mandatory
+///   `#[facet(nbtx::variant_as(<mode>))]` declares: a `String` of its
+///   (rename-aware) name, or its discriminant as a `Byte`/`Short`/`Int`/`Long`
 /// * a [`Value`] passes through unchanged, keeping the exact tag of every child
 /// * a `None` [`Option`] field is omitted from its compound
 ///
@@ -53,6 +56,10 @@ type Part<'f> = Partial<'f, true>;
 ///
 /// * [`Error::Unsupported`] for a type with no NBT representation (an enum
 ///   variant carrying data, a map with non-string keys, a bare `None`).
+/// * [`Error::MissingVariantAs`] for an enum that declared no
+///   `#[facet(nbtx::variant_as(...))]`, and
+///   [`Error::DiscriminantOutOfRange`] for a variant whose discriminant does not
+///   fit the width it declared.
 /// * [`Error::MaxDepthExceeded`] if the value nests containers more deeply than
 ///   [`MAX_DEPTH`](crate::MAX_DEPTH), the same bound the binary codec enforces.
 ///
@@ -271,17 +278,19 @@ fn map_to_value(peek: Peek, depth: usize) -> Result<Value, Error> {
     Ok(Value::Compound(out))
 }
 
+/// Converts a unit enum variant into whichever [`Value`] its mandatory
+/// `#[facet(nbtx::variant_as(...))]` declared: a `String` of its (rename-aware)
+/// name, or its discriminant as a `Byte`/`Short`/`Int`/`Long`, matching the tag
+/// the binary writer would have used byte for byte.
 fn enum_to_value(peek: Peek) -> Result<Value, Error> {
-    let en = peek.into_enum().map_err(reflect_err)?;
-    let variant = en.active_variant().map_err(reflect_err)?;
-    if variant.data.fields.is_empty() {
-        // Unit variant → a `String` holding the variant name.
-        Ok(Value::String(BString::from(variant.name)))
-    } else {
-        Err(unsupported(
-            "serializing enums with data (other than `Value`) is not supported",
-        ))
-    }
+    Ok(match enum_wire(peek)? {
+        EnumWire::Name(name) => Value::String(BString::from(name)),
+        EnumWire::Int(FieldType::Byte, v) => Value::Byte(v as i8),
+        EnumWire::Int(FieldType::Short, v) => Value::Short(v as i16),
+        EnumWire::Int(FieldType::Int, v) => Value::Int(v as i32),
+        // `enum_wire` only ever answers with these four tags.
+        EnumWire::Int(_, v) => Value::Long(v),
+    })
 }
 
 // --- from_value -----------------------------------------------------------
@@ -302,6 +311,10 @@ fn enum_to_value(peek: Peek) -> Result<Value, Error> {
 ///   [`Option`] field defaults to `None`.
 /// * `Vec<T>`/`[T; N]` accept `List`, `ByteArray`, `IntArray` and `LongArray`;
 ///   a map accepts a `Compound`.
+/// * An enum accepts exactly the tag its mandatory
+///   `#[facet(nbtx::variant_as(<mode>))]` declares — a `String` naming the
+///   variant (`#[facet(rename = "...")]`-aware) or a fixed-width integer holding
+///   its discriminant — and rejects a number no variant claims.
 /// * A `bool` is `true` only for byte `1` — every other byte, `2` included, is
 ///   `false`, because `TAG_Byte` is a signed integer used as a flag and a `!= 0`
 ///   test would disagree with the Bedrock decoders that wrote the data.
@@ -313,6 +326,8 @@ fn enum_to_value(peek: Peek) -> Result<Value, Error> {
 /// * [`Error::UnexpectedType`] when a node's tag cannot fill the target field
 ///   (a `List` where an `i32` was expected, and so on).
 /// * [`Error::UnknownField`] for a compound key with no matching field.
+/// * [`Error::MissingVariantAs`] for an enum that declared no
+///   `#[facet(nbtx::variant_as(...))]`.
 /// * [`Error::MaxDepthExceeded`] past [`MAX_DEPTH`](crate::MAX_DEPTH).
 /// * [`Error::Unsupported`] for a target type with no NBT representation, and
 ///   [`Error::Other`] for a non-UTF-8 `String` field or a struct left with a
@@ -407,20 +422,45 @@ fn value_into_leaf<'f>(
     }
 
     match shape.ty {
-        // A unit enum variant is represented as a `String` holding the variant's
-        // name (see `enum_to_value`); a data-carrying variant is rejected there
-        // and so never appears in a `Value`. Selecting a data-carrying variant
-        // by name here would still leave its fields unset, which
-        // `Partial::build` then reports on its own.
-        Type::User(UserType::Enum(_)) => match value {
-            Value::String(name) => {
-                let name = bstr::BStr::new(name.as_slice()).to_string();
-                p.select_variant_named(&name).map_err(reflect_err)
-            }
-            other => Err(unexpected_type(FieldType::String, value_tag(&other))),
-        },
+        // A unit enum variant is represented as its enum's mandatory
+        // `#[facet(nbtx::variant_as(...))]` says (see `enum_to_value`); a
+        // data-carrying variant is rejected there and so never appears in a
+        // `Value`. Selecting a data-carrying variant here would still leave its
+        // fields unset, which `Partial::build` then reports on its own.
+        Type::User(UserType::Enum(_)) => enum_from_value(p, shape, value),
         _ => Err(unsupported("deserialization of this type is not supported")),
     }
+}
+
+/// Builds a unit enum variant from a [`Value`], guided by the enum's declared
+/// mode. See [`crate::reflect::VariantAs`].
+fn enum_from_value<'f>(
+    p: Part<'f>,
+    shape: &'static Shape,
+    value: Value,
+) -> Result<Part<'f>, Error> {
+    let mode = VariantAs::of(shape)?;
+    let expected = mode.tag();
+    let actual = value_tag(&value);
+    if actual != expected {
+        return Err(unexpected_type(expected, actual));
+    }
+    // The tags are signed; `widen` reinterprets the bit pattern for the unsigned
+    // modes so the discriminant comes back as it was written.
+    let raw = match value {
+        Value::String(name) => {
+            let name = bstr::BStr::new(name.as_slice()).to_string();
+            // Rename-aware, matching what `enum_to_value` wrote.
+            return p.select_variant_named(&name).map_err(reflect_err);
+        }
+        Value::Byte(v) => i64::from(v),
+        Value::Short(v) => i64::from(v),
+        Value::Int(v) => i64::from(v),
+        Value::Long(v) => v,
+        // Unreachable: the tag check above already pinned the pairing.
+        other => return Err(unexpected_type(expected, value_tag(&other))),
+    };
+    p.select_variant(mode.widen(raw)).map_err(reflect_err)
 }
 
 fn value_into_scalar(p: Part<'_>, scalar: ScalarType, value: Value) -> Result<Part<'_>, Error> {
