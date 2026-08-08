@@ -29,6 +29,7 @@ facet = { git = "https://github.com/facet-rs/facet", rev = "93e597980313f53ce81d
 # Only needed for `BString` fields — NBT strings that may not be valid UTF-8.
 bstr = "1"
 ```
+
 and then start deserialising with `nbtx`. Types are mapped to NBT via `#[derive(facet::Facet)]`.
 
 ## 📖 Examples
@@ -55,16 +56,13 @@ cargo run --example snbt --features snbt
 | [`server_dat`](examples/server_dat.rs) | Decoding a real Minecraft `servers.dat`, both with a schema and without. |
 | [`in_writer`](examples/in_writer.rs) | Embedding NBT inside a larger byte stream, and reading it back out. |
 
-## Contributing 
+## Contributing
+
 We welcome contributions of all kinds, including bug fixes, new features, docs updates, and improvements across crates.  
 Please read the full contribution guide here: **[CONTRIBUTING.md](CONTRIBUTING.md)**  
 
-For guidance or collaboration, connect with the community on Discord. 
-
-
-
-
-
+For guidance or collaboration, connect with the community on Discord.
 
 ## License
+
 This project is licensed under the **Apache License 2.0**. See the [LICENSE](https://github.com/bedrock-crustaceans/nbtx/tree/master/LICENSE) for the details.
