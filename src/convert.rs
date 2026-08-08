@@ -8,6 +8,10 @@
 //! re-stated here — so the tree these produce is indistinguishable from one
 //! obtained by encoding to bytes and decoding them back into a `Value`.
 //!
+//! That includes [`lenient_width`](crate::Attr::LenientWidth): [`from_value`]
+//! widens a node whose tag a field named, on exactly the terms `from_bytes`
+//! does, and [`to_value`] ignores the attribute exactly as `to_bytes` does.
+//!
 //! Neither function touches the wire format, so there is no endianness, no
 //! length prefix and no varint anywhere in this module, and it is available
 //! whether or not the `nbt`/`snbt` features are enabled.
@@ -18,8 +22,9 @@ use facet_core::{Def, ScalarType, Shape, Type, UserType};
 use facet_reflect::{Partial, Peek};
 
 use crate::reflect::{
-    EnumWire, VariantAs, enum_wire, is_bstring, is_value, list_tag, reflect_err, scalar_tag,
-    unexpected_type, unknown_field, unsupported, unwrap_option, value_tag,
+    EnumWire, Lenient, VariantAs, enum_wire, is_bstring, is_value, lenient_discriminant, list_tag,
+    reflect_err, scalar_tag, set_lenient, unexpected_type, unknown_field, unsupported,
+    unwrap_option, value_tag, wire_scalar,
 };
 use crate::{Compound, Error, FieldType, Value, check_depth};
 
@@ -64,6 +69,9 @@ type Part<'f> = Partial<'f, true>;
 ///   [`MAX_DEPTH`](crate::MAX_DEPTH), the same bound the binary codec enforces.
 ///
 /// # Notes
+///
+/// [`lenient_width`](crate::Attr::LenientWidth) has no effect here: it is a
+/// decode-only tolerance, so a field is always written with its own tag.
 ///
 /// [`Named<T>`](crate::Named) has no special meaning here: a `Value` tree has no
 /// document root to name, so a `Named` converts as the ordinary two-field
@@ -315,6 +323,9 @@ fn enum_to_value(peek: Peek) -> Result<Value, Error> {
 ///   `#[facet(nbtx::variant_as(<mode>))]` declares — a `String` naming the
 ///   variant (`#[facet(rename = "...")]`-aware) or a fixed-width integer holding
 ///   its discriminant — and rejects a number no variant claims.
+/// * A field, or an enum's discriminant, additionally accepts every tag its
+///   [`lenient_width`](crate::Attr::LenientWidth) names, converting each into
+///   the declared type losslessly or not at all.
 /// * A `bool` is `true` only for byte `1` — every other byte, `2` included, is
 ///   `false`, because `TAG_Byte` is a signed integer used as a flag and a `!= 0`
 ///   test would disagree with the Bedrock decoders that wrote the data.
@@ -328,6 +339,11 @@ fn enum_to_value(peek: Peek) -> Result<Value, Error> {
 /// * [`Error::UnknownField`] for a compound key with no matching field.
 /// * [`Error::MissingVariantAs`] for an enum that declared no
 ///   `#[facet(nbtx::variant_as(...))]`.
+/// * [`Error::LenientWidthOutOfRange`] when a tag
+///   [`lenient_width`](crate::Attr::LenientWidth) allows carries a value the
+///   declared type cannot hold exactly, and
+///   [`Error::InvalidLenientWidth`] when that attribute was written on
+///   something with no scalar to widen.
 /// * [`Error::MaxDepthExceeded`] past [`MAX_DEPTH`](crate::MAX_DEPTH).
 /// * [`Error::Unsupported`] for a target type with no NBT representation, and
 ///   [`Error::Other`] for a non-UTF-8 `String` field or a struct left with a
@@ -355,7 +371,7 @@ fn enum_to_value(peek: Peek) -> Result<Value, Error> {
 /// ```
 pub fn from_value<'f, T: Facet<'f>>(value: Value) -> Result<T, Error> {
     let p = Partial::alloc::<T>().map_err(reflect_err)?;
-    let p = value_into(p, <T as Facet>::SHAPE, value, 0)?;
+    let p = value_into(p, <T as Facet>::SHAPE, value, 0, Lenient::NONE)?;
     let built = p.build().map_err(reflect_err)?;
     built.materialize::<T>().map_err(reflect_err)
 }
@@ -366,11 +382,16 @@ pub fn from_value<'f, T: Facet<'f>>(value: Value) -> Result<T, Error> {
 /// `depth` is the number of containers already entered; every nested-container
 /// arm checks it against [`MAX_DEPTH`](crate::MAX_DEPTH) before recursing. The
 /// dispatch order mirrors `nbt::de::read_into` exactly.
+///
+/// `lenient` is the `#[facet(nbtx::lenient_width(...))]` declaration of the
+/// struct field this subtree came from, carried down so that one declaration
+/// widens every element of a `Vec` and the inside of an `Option` alike.
 fn value_into<'f>(
     p: Part<'f>,
     shape: &'static Shape,
     value: Value,
     depth: usize,
+    lenient: Lenient,
 ) -> Result<Part<'f>, Error> {
     // A dynamic `Value` target swallows the whole (possibly nested) subtree.
     if is_value(shape) {
@@ -381,7 +402,7 @@ fn value_into<'f>(
     // Option: the key was present, so this is `Some`.
     if let Def::Option(def) = shape.def {
         let p = p.begin_some().map_err(reflect_err)?;
-        let p = value_into(p, def.t(), value, depth)?;
+        let p = value_into(p, def.t(), value, depth, lenient)?;
         return p.end().map_err(reflect_err);
     }
 
@@ -389,8 +410,10 @@ fn value_into<'f>(
     // their own, so both are ruled out before the container dispatch below.
     if !is_bstring(shape) && ScalarType::try_from_shape(shape).is_none() {
         match shape.def {
-            Def::List(def) => return value_into_seq(p, def.t(), value, None, depth),
-            Def::Array(def) => return value_into_seq(p, def.t(), value, Some(def.n), depth),
+            Def::List(def) => return value_into_seq(p, def.t(), value, None, depth, lenient),
+            Def::Array(def) => {
+                return value_into_seq(p, def.t(), value, Some(def.n), depth, lenient);
+            }
             Def::Map(def) => return value_into_map(p, def.v(), value, depth),
             _ => {}
         }
@@ -399,7 +422,7 @@ fn value_into<'f>(
         }
     }
 
-    value_into_leaf(p, shape, value)
+    value_into_leaf(p, shape, value, lenient)
 }
 
 /// All the non-recursive target types.
@@ -407,6 +430,7 @@ fn value_into_leaf<'f>(
     p: Part<'f>,
     shape: &'static Shape,
     value: Value,
+    lenient: Lenient,
 ) -> Result<Part<'f>, Error> {
     // `bstr::BString` field: take the string's raw bytes without UTF-8
     // validation (unlike a concrete `String`, which must be valid UTF-8).
@@ -418,7 +442,7 @@ fn value_into_leaf<'f>(
     }
 
     if let Some(scalar) = ScalarType::try_from_shape(shape) {
-        return value_into_scalar(p, scalar, value);
+        return value_into_scalar(p, scalar, value, lenient);
     }
 
     match shape.ty {
@@ -440,9 +464,18 @@ fn enum_from_value<'f>(
     value: Value,
 ) -> Result<Part<'f>, Error> {
     let mode = VariantAs::of(shape)?;
+    let lenient = Lenient::of_enum(shape, mode)?;
     let expected = mode.tag();
     let actual = value_tag(&value);
     if actual != expected {
+        // A tag the enum's own `#[facet(nbtx::lenient_width(...))]` names is
+        // converted into the mode's width instead of being refused.
+        if lenient.accepts(actual)
+            && let Some(wire) = wire_scalar(&value)
+        {
+            let disc = lenient_discriminant(wire, mode)?;
+            return p.select_variant(disc).map_err(reflect_err);
+        }
         return Err(unexpected_type(expected, actual));
     }
     // The tags are signed; `widen` reinterprets the bit pattern for the unsigned
@@ -463,7 +496,12 @@ fn enum_from_value<'f>(
     p.select_variant(mode.widen(raw)).map_err(reflect_err)
 }
 
-fn value_into_scalar(p: Part<'_>, scalar: ScalarType, value: Value) -> Result<Part<'_>, Error> {
+fn value_into_scalar(
+    p: Part<'_>,
+    scalar: ScalarType,
+    value: Value,
+    lenient: Lenient,
+) -> Result<Part<'_>, Error> {
     // The tag a value of this scalar type would have been *written* with is the
     // only tag it may be read from, so the check is the shared `scalar_tag`
     // table rather than a second, hand-maintained one.
@@ -471,6 +509,13 @@ fn value_into_scalar(p: Part<'_>, scalar: ScalarType, value: Value) -> Result<Pa
         .ok_or_else(|| unsupported("deserialization of this scalar type is not supported"))?;
     let actual = value_tag(&value);
     if actual != expected {
+        // `#[facet(nbtx::lenient_width(...))]` names the other tags this field
+        // takes; each is converted losslessly or reported.
+        if lenient.accepts(actual)
+            && let Some(wire) = wire_scalar(&value)
+        {
+            return set_lenient(p, scalar, wire);
+        }
         return Err(unexpected_type(expected, actual));
     }
 
@@ -512,18 +557,19 @@ fn value_into_seq<'f>(
     value: Value,
     array_len: Option<usize>,
     depth: usize,
+    lenient: Lenient,
 ) -> Result<Part<'f>, Error> {
     check_depth(depth)?;
     let tag = value_tag(&value);
     match value {
         Value::List(items) => {
             let len = items.len();
-            fill_seq(p, elem_shape, tag, len, items, array_len, depth)
+            fill_seq(p, elem_shape, tag, len, items, array_len, depth, lenient)
         }
         Value::ByteArray(bytes) => {
             let len = bytes.len();
             let items = bytes.into_iter().map(|b| Value::Byte(b.cast_signed()));
-            fill_seq(p, elem_shape, tag, len, items, array_len, depth)
+            fill_seq(p, elem_shape, tag, len, items, array_len, depth, lenient)
         }
         Value::IntArray(ints) => {
             let len = ints.len();
@@ -535,6 +581,7 @@ fn value_into_seq<'f>(
                 ints.into_iter().map(Value::Int),
                 array_len,
                 depth,
+                lenient,
             )
         }
         Value::LongArray(longs) => {
@@ -547,6 +594,7 @@ fn value_into_seq<'f>(
                 longs.into_iter().map(Value::Long),
                 array_len,
                 depth,
+                lenient,
             )
         }
         _ => Err(unexpected_type(FieldType::List, tag)),
@@ -556,6 +604,10 @@ fn value_into_seq<'f>(
 /// Drains `items` (already re-tagged by [`value_into_seq`]) into a list or a
 /// fixed-size array. `tag` is only carried through for the length-mismatch
 /// error, which names the container tag that supplied the elements.
+// The parameter list is long because this is the shared tail of four
+// `value_into_seq` arms, each of which has already destructured its own
+// container; bundling them would only move the same values into a struct.
+#[allow(clippy::too_many_arguments)]
 fn fill_seq<'f>(
     p: Part<'f>,
     elem_shape: &'static Shape,
@@ -564,6 +616,7 @@ fn fill_seq<'f>(
     items: impl IntoIterator<Item = Value>,
     array_len: Option<usize>,
     depth: usize,
+    lenient: Lenient,
 ) -> Result<Part<'f>, Error> {
     if let Some(n) = array_len {
         if len != n {
@@ -572,7 +625,7 @@ fn fill_seq<'f>(
         let mut p = p.init_array().map_err(reflect_err)?;
         for (i, item) in items.into_iter().enumerate() {
             p = p.begin_nth_field(i).map_err(reflect_err)?;
-            p = value_into(p, elem_shape, item, depth + 1)?;
+            p = value_into(p, elem_shape, item, depth + 1, lenient)?;
             p = p.end().map_err(reflect_err)?;
         }
         Ok(p)
@@ -580,7 +633,7 @@ fn fill_seq<'f>(
         let mut p = p.init_list().map_err(reflect_err)?;
         for item in items {
             p = p.begin_list_item().map_err(reflect_err)?;
-            p = value_into(p, elem_shape, item, depth + 1)?;
+            p = value_into(p, elem_shape, item, depth + 1, lenient)?;
             p = p.end().map_err(reflect_err)?;
         }
         Ok(p)
@@ -607,7 +660,9 @@ fn value_into_map<'f>(
         p = p.set(key).map_err(reflect_err)?;
         p = p.end().map_err(reflect_err)?;
         p = p.begin_value().map_err(reflect_err)?;
-        p = value_into(p, value_shape, entry, depth + 1)?;
+        // A map's values carry no `lenient_width` of their own: the attribute is
+        // refused on a map-typed field in the first place (see `lenient_leaf`).
+        p = value_into(p, value_shape, entry, depth + 1, Lenient::NONE)?;
         p = p.end().map_err(reflect_err)?;
     }
     Ok(p)
@@ -645,8 +700,9 @@ fn value_into_struct<'f>(
 
         match field {
             Some((idx, f)) => {
+                let lenient = Lenient::of_field(shape, f)?;
                 p = p.begin_nth_field(idx).map_err(reflect_err)?;
-                p = value_into(p, f.shape(), entry, depth + 1)?;
+                p = value_into(p, f.shape(), entry, depth + 1, lenient)?;
                 p = p.end().map_err(reflect_err)?;
             }
             // Opted out of strict decoding: drop the entry.

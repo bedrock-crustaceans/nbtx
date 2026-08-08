@@ -13,6 +13,25 @@
 //! `#[facet(nbtx::allow_unknown_fields)]`. Enum targets do too: the mandatory
 //! `#[facet(nbtx::variant_as(<mode>))]` decides whether a variant is read from a
 //! string naming it or from an integer literal holding its discriminant.
+//!
+//! [`lenient_width`](crate::Attr::LenientWidth) is honoured here as well, though
+//! it has less to do than in the binary codec: a literal's type suffix is
+//! dropped before parsing, so `3b` already lands in an `i32` field unaided. What
+//! the attribute adds is the *conversion* — an integer literal that overflows
+//! the declared type, or a decimal one where an integer is declared, is widened
+//! in through [`crate::reflect`] (and range-checked there) instead of failing to
+//! parse. The tag a literal counts as comes from its own suffix, exactly as for
+//! an untyped node: `3b` is a `Byte`, `3` an `Int`, `3.0` a `Double`, `3.0f` a
+//! `Float`.
+//!
+//! That has a sharp edge worth calling out on its own: `f32` and `f64` are
+//! *not* interchangeable declarations here, because a bare (suffixless)
+//! decimal literal is always a `Double`. Given `#[facet(nbtx::lenient_width(f32))]`
+//! on an integer field, `3.0f` widens in (it is a `Float`, the tag named) but a
+//! bare `3.0` does not (it is a `Double`, which was never named) — the
+//! opposite of what the same declaration means for the *binary* codec, where
+//! there is no such thing as a suffix. Naming both `f32` and `f64` accepts
+//! either spelling.
 
 use crate::value::Compound;
 use bstr::BString;
@@ -22,7 +41,10 @@ use facet_reflect::Partial;
 
 use crate::error::{ParseFloatError, ParseIntError, UnexpectedEof, UnexpectedSymbol};
 // Shared with the binary codec and the `Value` conversion; see `crate::reflect`.
-use crate::reflect::{VariantAs, is_bstring, is_value, reflect_err, unknown_field, unsupported};
+use crate::reflect::{
+    Lenient, VariantAs, WireScalar, is_bstring, is_value, lenient_discriminant, reflect_err,
+    set_lenient, set_wire, unknown_field, unsupported, wire_scalar,
+};
 use crate::{Error, FieldType, Value, check_depth};
 
 type Part<'f> = Partial<'f, true>;
@@ -81,7 +103,7 @@ impl<'a> Deserializer<'a> {
     /// Parses the input into a value of type `T`.
     pub fn parse<'f, T: Facet<'f>>(&mut self) -> Result<T, Error> {
         let p = Partial::alloc::<T>().map_err(reflect_err)?;
-        let p = self.parse_into(p, <T as Facet>::SHAPE, 0)?;
+        let p = self.parse_into(p, <T as Facet>::SHAPE, 0, Lenient::NONE)?;
         p.build()
             .map_err(reflect_err)?
             .materialize()
@@ -401,11 +423,16 @@ impl<'a> Deserializer<'a> {
     /// `depth` is the number of containers already entered; every
     /// nested-container arm checks it against [`MAX_DEPTH`](crate::MAX_DEPTH)
     /// before recursing, exactly as the binary deserializer does.
+    ///
+    /// `lenient` is the `#[facet(nbtx::lenient_width(...))]` declaration of the
+    /// struct field this node belongs to, carried down so that one declaration
+    /// widens every element of a `Vec` and the inside of an `Option` alike.
     fn parse_into<'f>(
         &mut self,
         p: Part<'f>,
         shape: &'static Shape,
         depth: usize,
+        lenient: Lenient,
     ) -> Result<Part<'f>, Error> {
         if is_value(shape) {
             let v = self.parse_value(depth)?;
@@ -414,7 +441,7 @@ impl<'a> Deserializer<'a> {
 
         if let Def::Option(def) = shape.def {
             let p = p.begin_some().map_err(reflect_err)?;
-            let p = self.parse_into(p, def.t(), depth)?;
+            let p = self.parse_into(p, def.t(), depth, lenient)?;
             return p.end().map_err(reflect_err);
         }
 
@@ -427,12 +454,14 @@ impl<'a> Deserializer<'a> {
         }
 
         if let Some(scalar) = ScalarType::try_from_shape(shape) {
-            return self.parse_scalar_into(p, scalar);
+            return self.parse_scalar_into(p, scalar, lenient);
         }
 
         match shape.def {
-            Def::List(def) => return self.parse_seq_into(p, def.t(), None, depth),
-            Def::Array(def) => return self.parse_seq_into(p, def.t(), Some(def.n), depth),
+            Def::List(def) => return self.parse_seq_into(p, def.t(), None, depth, lenient),
+            Def::Array(def) => {
+                return self.parse_seq_into(p, def.t(), Some(def.n), depth, lenient);
+            }
             Def::Map(def) => return self.parse_map_into(p, def.v(), depth),
             _ => {}
         }
@@ -454,6 +483,7 @@ impl<'a> Deserializer<'a> {
         shape: &'static Shape,
     ) -> Result<Part<'f>, Error> {
         let mode = VariantAs::of(shape)?;
+        let lenient = Lenient::of_enum(shape, mode)?;
         if mode == VariantAs::Str {
             let name = self.read_string()?;
             return p.select_variant_named(&name).map_err(reflect_err);
@@ -463,20 +493,37 @@ impl<'a> Deserializer<'a> {
         // unsigned modes.
         let tok = self.read_token()?;
         let raw = match mode.tag() {
-            FieldType::Byte => i64::from(parse_int::<i8>(self, tok)?),
-            FieldType::Short => i64::from(parse_int::<i16>(self, tok)?),
-            FieldType::Int => i64::from(parse_int::<i32>(self, tok)?),
-            _ => parse_int::<i64>(self, tok)?,
+            FieldType::Byte => parse_int::<i8>(self, tok).map(i64::from),
+            FieldType::Short => parse_int::<i16>(self, tok).map(i64::from),
+            FieldType::Int => parse_int::<i32>(self, tok).map(i64::from),
+            _ => parse_int::<i64>(self, tok),
         };
-        p.select_variant(mode.widen(raw)).map_err(reflect_err)
+        let disc = match raw {
+            Ok(raw) => mode.widen(raw),
+            // The enum's own `#[facet(nbtx::lenient_width(...))]` widens the
+            // literal in, on exactly the terms a lenient scalar field gets.
+            Err(err) => match self.widen_token(tok, lenient) {
+                Some(wire) => lenient_discriminant(wire, mode)?,
+                None => return Err(err),
+            },
+        };
+        p.select_variant(disc).map_err(reflect_err)
     }
 
     fn parse_scalar_into<'f>(
         &mut self,
         p: Part<'f>,
         scalar: ScalarType,
+        lenient: Lenient,
     ) -> Result<Part<'f>, Error> {
+        // The three targets `lenient_width` never applies to are handled first:
+        // a string is not a number at all, and `bool`/`u8` are outside the six
+        // NBT scalar wire types the attribute may name.
         match scalar {
+            ScalarType::Str | ScalarType::String | ScalarType::CowStr => {
+                let s = self.read_string()?;
+                return p.set(s).map_err(reflect_err);
+            }
             ScalarType::Bool => {
                 let tok = self.read_token()?;
                 let b = match tok {
@@ -484,45 +531,59 @@ impl<'a> Deserializer<'a> {
                     "false" => false,
                     _ => parse_int::<i64>(self, tok)? != 0,
                 };
-                p.set(b).map_err(reflect_err)
-            }
-            ScalarType::I8 => {
-                let tok = self.read_token()?;
-                p.set(parse_int::<i8>(self, tok)?).map_err(reflect_err)
+                return p.set(b).map_err(reflect_err);
             }
             ScalarType::U8 => {
                 let tok = self.read_token()?;
-                p.set(parse_int::<i8>(self, tok)?.cast_unsigned())
-                    .map_err(reflect_err)
+                return p
+                    .set(parse_int::<i8>(self, tok)?.cast_unsigned())
+                    .map_err(reflect_err);
             }
-            ScalarType::I16 => {
-                let tok = self.read_token()?;
-                p.set(parse_int::<i16>(self, tok)?).map_err(reflect_err)
-            }
-            ScalarType::I32 => {
-                let tok = self.read_token()?;
-                p.set(parse_int::<i32>(self, tok)?).map_err(reflect_err)
-            }
-            ScalarType::I64 => {
-                let tok = self.read_token()?;
-                p.set(parse_int::<i64>(self, tok)?).map_err(reflect_err)
-            }
-            ScalarType::F32 => {
-                let tok = self.read_token()?;
-                p.set(parse_float::<f32>(self, tok)?).map_err(reflect_err)
-            }
-            ScalarType::F64 => {
-                let tok = self.read_token()?;
-                p.set(parse_float::<f64>(self, tok)?).map_err(reflect_err)
-            }
-            ScalarType::Str | ScalarType::String | ScalarType::CowStr => {
-                let s = self.read_string()?;
-                p.set(s).map_err(reflect_err)
-            }
-            _ => Err(unsupported(
-                "deserialization of this scalar type is not supported",
-            )),
+            _ => {}
         }
+
+        // SNBT is already width-tolerant by construction — `parse_int`/
+        // `parse_float` drop a literal's type suffix and read at the *field's*
+        // width, so `3b` lands in an `i32` field with or without the attribute.
+        // So the natural parse is tried first and `lenient_width` only widens
+        // what it rejects: an out-of-range integer, or a literal whose suffix
+        // makes it a different kind of number than the field.
+        let tok = self.read_token()?;
+        let natural = match scalar {
+            ScalarType::I8 => parse_int::<i8>(self, tok).map(WireScalar::Byte),
+            ScalarType::I16 => parse_int::<i16>(self, tok).map(WireScalar::Short),
+            ScalarType::I32 => parse_int::<i32>(self, tok).map(WireScalar::Int),
+            ScalarType::I64 => parse_int::<i64>(self, tok).map(WireScalar::Long),
+            ScalarType::F32 => parse_float::<f32>(self, tok).map(WireScalar::Float),
+            ScalarType::F64 => parse_float::<f64>(self, tok).map(WireScalar::Double),
+            _ => {
+                return Err(unsupported(
+                    "deserialization of this scalar type is not supported",
+                ));
+            }
+        };
+        match natural {
+            Ok(wire) => set_wire(p, wire),
+            Err(err) => match self.widen_token(tok, lenient) {
+                Some(wire) => set_lenient(p, scalar, wire),
+                None => Err(err),
+            },
+        }
+    }
+
+    /// Re-reads a token that the field's own width could not parse, as the
+    /// [`Value`] its literal really denotes, and returns it when
+    /// `#[facet(nbtx::lenient_width(...))]` accepts that tag.
+    ///
+    /// The tag comes from the literal's own suffix, exactly as it would for an
+    /// untyped SNBT node: `3b` is a `Byte`, `3` an `Int`, `3.0` a `Double` and
+    /// `3.0f` a `Float`. `None` means "nothing to widen here" and leaves the
+    /// caller's original parse error in place — a bareword is still a bareword,
+    /// not a number that failed to fit.
+    fn widen_token(&self, tok: &str, lenient: Lenient) -> Option<WireScalar> {
+        let value = token_to_value(self, tok).ok()?;
+        let wire = wire_scalar(&value)?;
+        lenient.accepts(wire.tag()).then_some(wire)
     }
 
     fn parse_seq_into<'f>(
@@ -531,6 +592,7 @@ impl<'a> Deserializer<'a> {
         elem_shape: &'static Shape,
         array_len: Option<usize>,
         depth: usize,
+        lenient: Lenient,
     ) -> Result<Part<'f>, Error> {
         check_depth(depth)?;
         // Consume the opening bracket (and a `X;` prefix for typed arrays).
@@ -551,7 +613,7 @@ impl<'a> Deserializer<'a> {
                     return Err(unsupported("too many elements for fixed-size array"));
                 }
                 p = p.begin_nth_field(i).map_err(reflect_err)?;
-                p = self.parse_into(p, elem_shape, depth + 1)?;
+                p = self.parse_into(p, elem_shape, depth + 1, lenient)?;
                 p = p.end().map_err(reflect_err)?;
                 i += 1;
                 match self.peek()? {
@@ -574,7 +636,7 @@ impl<'a> Deserializer<'a> {
                     break;
                 }
                 p = p.begin_list_item().map_err(reflect_err)?;
-                p = self.parse_into(p, elem_shape, depth + 1)?;
+                p = self.parse_into(p, elem_shape, depth + 1, lenient)?;
                 p = p.end().map_err(reflect_err)?;
                 match self.peek()? {
                     ',' => {
@@ -611,7 +673,9 @@ impl<'a> Deserializer<'a> {
             p = p.set(key).map_err(reflect_err)?;
             p = p.end().map_err(reflect_err)?;
             p = p.begin_value().map_err(reflect_err)?;
-            p = self.parse_into(p, value_shape, depth + 1)?;
+            // A map's values carry no `lenient_width` of their own: the
+            // attribute is refused on a map-typed field in the first place.
+            p = self.parse_into(p, value_shape, depth + 1, Lenient::NONE)?;
             p = p.end().map_err(reflect_err)?;
             match self.peek()? {
                 ',' => {
@@ -665,8 +729,9 @@ impl<'a> Deserializer<'a> {
                 .find(|(_, f)| f.effective_name() == key.as_str());
 
             if let Some((idx, f)) = field {
+                let lenient = Lenient::of_field(shape, f)?;
                 p = p.begin_nth_field(idx).map_err(reflect_err)?;
-                p = self.parse_into(p, f.shape(), depth + 1)?;
+                p = self.parse_into(p, f.shape(), depth + 1, lenient)?;
                 p = p.end().map_err(reflect_err)?;
             } else if allow_unknown {
                 // Opted out of strict decoding: parse and discard the value.

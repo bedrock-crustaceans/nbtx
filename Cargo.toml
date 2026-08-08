@@ -22,9 +22,9 @@ preserve_order = ["dep:indexmap", "facet/indexmap", "facet-core/indexmap"]
 default = ["nbt", "snbt", "preserve_order"]
 
 [dependencies]
-facet = { git = "https://github.com/facet-rs/facet", rev = "93e597980313f53ce81d242910adc9bdf34f9665", features = ["bstr"] }
-facet-reflect = { git = "https://github.com/facet-rs/facet", rev = "93e597980313f53ce81d242910adc9bdf34f9665" }
-facet-core = { git = "https://github.com/facet-rs/facet", rev = "93e597980313f53ce81d242910adc9bdf34f9665", features = ["bstr"] }
+facet = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf", features = ["bstr"] }
+facet-reflect = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf" }
+facet-core = { git = "https://github.com/facet-rs/facet", rev = "bbce10cbd1ddd535b0d812ccbf9456f7ff7d58cf", features = ["bstr"] }
 paste = "1.0"
 thiserror = "2.0"
 byteorder = "1.5"

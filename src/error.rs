@@ -504,6 +504,96 @@ impl DiscriminantOutOfRange {
     }
 }
 
+/// `#[facet(nbtx::lenient_width(...))]` was written somewhere it has no meaning.
+///
+/// The attribute widens a *scalar* on decode, so it is only legal on a field
+/// whose leaf type is one of the six NBT scalars (`i8`, `i16`, `i32`, `i64`,
+/// `f32`, `f64`), possibly behind an `Option`, a `Vec` or an array — or on an
+/// enum with an integer `#[facet(nbtx::variant_as(...))]` mode. A struct-typed
+/// field, a `Vec<Struct>`, a `bool`, a `String`, a [`Value`](crate::Value) or a
+/// `variant_as(str)` enum has nothing to widen, so the attribute is reported
+/// rather than quietly ignored.
+///
+/// The check runs the first time the field (or enum) is decoded, not at derive
+/// time: the attribute grammar sees only the attribute's own tokens, never the
+/// type of the item it was written on.
+#[derive(Error, Debug, Clone)]
+#[error(
+    "`{container}::{field}` declares `#[facet(nbtx::lenient_width(...))]`, which only applies to `i8`, `i16`, `i32`, `i64`, `f32` or `f64` (optionally inside an `Option`, `Vec` or array), or to an enum with an integer `variant_as` mode: {reason}"
+)]
+pub struct InvalidLenientWidth {
+    /// The name of the struct or enum carrying the offending declaration.
+    pub(crate) container: &'static str,
+    /// The field the attribute was written on, or `"<container>"` when it was
+    /// written on an enum itself.
+    pub(crate) field: &'static str,
+    /// Why this placement is not legal.
+    pub(crate) reason: &'static str,
+}
+
+impl InvalidLenientWidth {
+    /// The name of the struct or enum carrying the offending declaration.
+    #[inline]
+    pub fn container(&self) -> &'static str {
+        self.container
+    }
+
+    /// The field the attribute was written on, or `"<container>"` when it was
+    /// written on an enum itself.
+    #[inline]
+    pub fn field(&self) -> &'static str {
+        self.field
+    }
+
+    /// Why this placement is not legal.
+    #[inline]
+    pub fn reason(&self) -> &'static str {
+        self.reason
+    }
+}
+
+/// A value arrived in a tag that `#[facet(nbtx::lenient_width(...))]` allows,
+/// but does not survive the conversion to the declared type.
+///
+/// Distinct from [`UnexpectedType`] on purpose: there, the tag itself was never
+/// allowed; here the schema *did* accept the tag, and it is this particular
+/// value that cannot be represented — an `Int` of 300 read into an `i8`, a
+/// `Long` too large for an `f32` to hold exactly, a `Float` of 0.5 read into an
+/// integer. nbtx refuses to truncate, wrap or round, so the value is reported
+/// instead.
+#[derive(Error, Debug, Clone)]
+#[error(
+    "value {value} arrived as {from}, which `#[facet(nbtx::lenient_width(...))]` accepts, but it is not exactly representable as `{target}`"
+)]
+pub struct LenientWidthOutOfRange {
+    /// The wire value that could not be converted, as it was rendered.
+    pub(crate) value: String,
+    /// The tag the value arrived in.
+    pub(crate) from: FieldType,
+    /// The Rust type it had to be converted to (`"i8"`, `"f32"`, …).
+    pub(crate) target: &'static str,
+}
+
+impl LenientWidthOutOfRange {
+    /// The wire value that could not be converted, as it was rendered.
+    #[inline]
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// The tag the value arrived in.
+    #[inline]
+    pub fn from(&self) -> FieldType {
+        self.from
+    }
+
+    /// The Rust type it had to be converted to (`"i8"`, `"f32"`, …).
+    #[inline]
+    pub fn target(&self) -> &'static str {
+        self.target
+    }
+}
+
 /// An unexpected symbol was encountered by the deserializer.
 #[cfg(feature = "snbt")]
 #[derive(Error, Debug, Clone)]
@@ -721,6 +811,15 @@ pub enum Error {
     /// A variant's discriminant did not fit the declared `variant_as` width.
     #[error(transparent)]
     DiscriminantOutOfRange(DiscriminantOutOfRange),
+    /// `#[facet(nbtx::lenient_width(...))]` was written on something it cannot
+    /// widen. Raised by every decoder (binary, SNBT and
+    /// [`from_value`](crate::from_value)) the first time that item is decoded.
+    #[error(transparent)]
+    InvalidLenientWidth(InvalidLenientWidth),
+    /// A value arrived in a tag `#[facet(nbtx::lenient_width(...))]` allows, but
+    /// is not exactly representable as the declared type.
+    #[error(transparent)]
+    LenientWidthOutOfRange(LenientWidthOutOfRange),
     #[cfg(feature = "snbt")]
     #[error(transparent)]
     UnexpectedSymbol(UnexpectedSymbol),

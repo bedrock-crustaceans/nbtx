@@ -16,6 +16,13 @@
 //!   or a fixed-width integer holding its discriminant — and errors if the enum
 //!   declared no mode, if the tag is a different one, or if no variant claims
 //!   the number that arrived.
+//!
+//! A field (or an enum's discriminant) may accept *more* than its own tag by
+//! naming the others in `#[facet(nbtx::lenient_width(<types>))]`; each is then
+//! converted into the declared type losslessly or reported. That is a decode-only
+//! tolerance — `nbt::ser` never consults it — and the rules live in
+//! [`crate::reflect`], shared with the other two codecs. See
+//! [`lenient_width`](crate::Attr::LenientWidth).
 
 use byteorder::ReadBytesExt;
 use facet::Facet;
@@ -27,7 +34,8 @@ use crate::named;
 use crate::nbt::io;
 // Shared with the SNBT codec and the `Value` conversion; see `crate::reflect`.
 use crate::reflect::{
-    VariantAs, is_bstring, is_value, reflect_err, unexpected_type, unknown_field, unsupported,
+    Lenient, VariantAs, WireScalar, is_bstring, is_value, lenient_discriminant, reflect_err,
+    scalar_tag, set_lenient, unexpected_type, unknown_field, unsupported,
 };
 use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, VarintEndian};
 
@@ -39,12 +47,18 @@ type Part<'f> = Partial<'f, true>;
 /// `depth` is the number of containers already entered; every nested-container
 /// reader checks it against [`MAX_DEPTH`](crate::MAX_DEPTH) before recursing, so
 /// a maliciously deep document errors out instead of overflowing the stack.
+///
+/// `lenient` is the `#[facet(nbtx::lenient_width(...))]` declaration of the
+/// struct field this subtree belongs to, carried down so that one declaration
+/// widens every element of a `Vec` and the inside of an `Option` alike. It is
+/// one `Copy` byte precisely because it rides this recursive path.
 fn read_into<'f, F: EndiannessImpl, R: ReadBytesExt>(
     p: Part<'f>,
     shape: &'static Shape,
     tag: FieldType,
     r: &mut R,
     depth: usize,
+    lenient: Lenient,
 ) -> Result<Part<'f>, Error> {
     // This function is on the recursion path, so it deliberately keeps almost
     // nothing in its own frame: every non-recursive case is delegated to an
@@ -61,7 +75,7 @@ fn read_into<'f, F: EndiannessImpl, R: ReadBytesExt>(
     // Option: the key was present, so this is `Some`.
     if let Def::Option(def) = shape.def {
         let p = p.begin_some().map_err(reflect_err)?;
-        let p = read_into::<F, R>(p, def.t(), tag, r, depth)?;
+        let p = read_into::<F, R>(p, def.t(), tag, r, depth, lenient)?;
         return p.end().map_err(reflect_err);
     }
 
@@ -69,8 +83,10 @@ fn read_into<'f, F: EndiannessImpl, R: ReadBytesExt>(
     // their own, so both are ruled out before the container dispatch below.
     if !is_bstring(shape) && ScalarType::try_from_shape(shape).is_none() {
         match shape.def {
-            Def::List(def) => return read_seq::<F, R>(p, def.t(), tag, r, None, depth),
-            Def::Array(def) => return read_seq::<F, R>(p, def.t(), tag, r, Some(def.n), depth),
+            Def::List(def) => return read_seq::<F, R>(p, def.t(), tag, r, None, depth, lenient),
+            Def::Array(def) => {
+                return read_seq::<F, R>(p, def.t(), tag, r, Some(def.n), depth, lenient);
+            }
             Def::Map(def) => return read_map::<F, R>(p, def.k(), def.v(), tag, r, depth),
             _ => {}
         }
@@ -79,7 +95,7 @@ fn read_into<'f, F: EndiannessImpl, R: ReadBytesExt>(
         }
     }
 
-    read_leaf::<F, R>(p, shape, tag, r)
+    read_leaf::<F, R>(p, shape, tag, r, lenient)
 }
 
 /// Reads a dynamic [`Value`] subtree. Split out of [`read_into`] so the 80-byte
@@ -103,6 +119,7 @@ fn read_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
     shape: &'static Shape,
     tag: FieldType,
     r: &mut R,
+    lenient: Lenient,
 ) -> Result<Part<'f>, Error> {
     // `bstr::BString` field: read a `String` tag's raw bytes without UTF-8
     // validation (unlike a concrete `String`, which must be valid UTF-8).
@@ -115,7 +132,7 @@ fn read_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
     }
 
     if let Some(scalar) = ScalarType::try_from_shape(shape) {
-        return read_scalar::<F, R>(p, scalar, tag, r);
+        return read_scalar::<F, R>(p, scalar, tag, r, lenient);
     }
 
     match shape.ty {
@@ -139,8 +156,15 @@ fn read_enum<'f, F: EndiannessImpl, R: ReadBytesExt>(
     r: &mut R,
 ) -> Result<Part<'f>, Error> {
     let mode = VariantAs::of(shape)?;
+    let lenient = Lenient::of_enum(shape, mode)?;
     let expected = mode.tag();
     if tag != expected {
+        // A tag the enum's own `#[facet(nbtx::lenient_width(...))]` names is
+        // converted into the mode's width instead of being refused.
+        if lenient.accepts(tag) {
+            let disc = lenient_discriminant(read_wire::<F, R>(r, tag)?, mode)?;
+            return p.select_variant(disc).map_err(reflect_err);
+        }
         return Err(unexpected_type(expected, tag));
     }
     if mode == VariantAs::Str {
@@ -161,13 +185,45 @@ fn read_enum<'f, F: EndiannessImpl, R: ReadBytesExt>(
     p.select_variant(mode.widen(raw)).map_err(reflect_err)
 }
 
+/// Reads one scalar payload at the width `tag` names, without regard to what it
+/// is going to be stored in.
+///
+/// Only reached through a `#[facet(nbtx::lenient_width(...))]` declaration,
+/// which can only name the six scalar tags — so the fallback arm is
+/// unreachable, and is written as the tag mismatch it would be rather than a
+/// panic.
+#[inline(never)]
+fn read_wire<F: EndiannessImpl, R: ReadBytesExt>(
+    r: &mut R,
+    tag: FieldType,
+) -> Result<WireScalar, Error> {
+    Ok(match tag {
+        FieldType::Byte => WireScalar::Byte(io::read_i8(r)?),
+        FieldType::Short => WireScalar::Short(io::read_i16::<F, R>(r)?),
+        FieldType::Int => WireScalar::Int(io::read_i32::<F, R>(r)?),
+        FieldType::Long => WireScalar::Long(io::read_i64::<F, R>(r)?),
+        FieldType::Float => WireScalar::Float(io::read_f32::<F, R>(r)?),
+        FieldType::Double => WireScalar::Double(io::read_f64::<F, R>(r)?),
+        other => return Err(unexpected_type(FieldType::Byte, other)),
+    })
+}
+
 #[inline(never)]
 fn read_scalar<'f, F: EndiannessImpl, R: ReadBytesExt>(
     p: Part<'f>,
     scalar: ScalarType,
     tag: FieldType,
     r: &mut R,
+    lenient: Lenient,
 ) -> Result<Part<'f>, Error> {
+    // `#[facet(nbtx::lenient_width(...))]` names the other tags this field
+    // takes; each is read at its own width and then converted losslessly into
+    // the declared type, or reported. The field's own tag never gets here, so a
+    // listed tag that happens to *be* the natural one changes nothing.
+    if lenient.accepts(tag) && scalar_tag(scalar) != Some(tag) {
+        return set_lenient(p, scalar, read_wire::<F, R>(r, tag)?);
+    }
+
     macro_rules! expect {
         ($ty:ident) => {
             if tag != FieldType::$ty {
@@ -271,6 +327,7 @@ fn read_seq<'f, F: EndiannessImpl, R: ReadBytesExt>(
     r: &mut R,
     array_len: Option<usize>,
     depth: usize,
+    lenient: Lenient,
 ) -> Result<Part<'f>, Error> {
     io::check_depth(depth)?;
     let (elem_tag, len) = read_seq_header::<F, R>(tag, r)?;
@@ -282,7 +339,7 @@ fn read_seq<'f, F: EndiannessImpl, R: ReadBytesExt>(
         let mut p = p.init_array().map_err(reflect_err)?;
         for i in 0..len {
             p = p.begin_nth_field(i).map_err(reflect_err)?;
-            p = read_into::<F, R>(p, elem_shape, elem_tag, r, depth + 1)?;
+            p = read_into::<F, R>(p, elem_shape, elem_tag, r, depth + 1, lenient)?;
             p = p.end().map_err(reflect_err)?;
         }
         Ok(p)
@@ -290,7 +347,7 @@ fn read_seq<'f, F: EndiannessImpl, R: ReadBytesExt>(
         let mut p = p.init_list().map_err(reflect_err)?;
         for _ in 0..len {
             p = p.begin_list_item().map_err(reflect_err)?;
-            p = read_into::<F, R>(p, elem_shape, elem_tag, r, depth + 1)?;
+            p = read_into::<F, R>(p, elem_shape, elem_tag, r, depth + 1, lenient)?;
             p = p.end().map_err(reflect_err)?;
         }
         Ok(p)
@@ -330,7 +387,9 @@ fn read_map<'f, F: EndiannessImpl, R: ReadBytesExt>(
         p = p.set(key).map_err(reflect_err)?;
         p = p.end().map_err(reflect_err)?;
         p = p.begin_value().map_err(reflect_err)?;
-        p = read_into::<F, R>(p, value_shape, entry_tag, r, depth + 1)?;
+        // A map's values carry no `lenient_width` of their own: the attribute is
+        // refused on a map-typed field in the first place.
+        p = read_into::<F, R>(p, value_shape, entry_tag, r, depth + 1, Lenient::NONE)?;
         p = p.end().map_err(reflect_err)?;
     }
     Ok(p)
@@ -381,8 +440,9 @@ fn read_struct<'f, F: EndiannessImpl, R: ReadBytesExt>(
             }
             Some((idx, f)) => {
                 filled[idx] = true;
+                let lenient = Lenient::of_field(shape, f)?;
                 p = p.begin_nth_field(idx).map_err(reflect_err)?;
-                p = read_into::<F, R>(p, f.shape(), entry_tag, r, depth + 1)?;
+                p = read_into::<F, R>(p, f.shape(), entry_tag, r, depth + 1, lenient)?;
                 p = p.end().map_err(reflect_err)?;
             }
             None if allow_unknown => {
@@ -430,11 +490,11 @@ pub fn from_bytes<'f, F: EndiannessImpl, T: Facet<'f>>(
             .end()
             .map_err(reflect_err)?;
         let p = p.begin_nth_field(nr.value_idx).map_err(reflect_err)?;
-        read_into::<F, _>(p, nr.value_shape, root_tag, reader, 0)?
+        read_into::<F, _>(p, nr.value_shape, root_tag, reader, 0, Lenient::NONE)?
             .end()
             .map_err(reflect_err)?
     } else {
-        read_into::<F, _>(p, shape, root_tag, reader, 0)?
+        read_into::<F, _>(p, shape, root_tag, reader, 0, Lenient::NONE)?
     };
 
     let built = p.build().map_err(reflect_err)?;

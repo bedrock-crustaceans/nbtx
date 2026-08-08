@@ -203,6 +203,18 @@ fn detail(err: &Error) -> Option<String> {
             e.discriminant(),
             e.mode()
         ),
+        Error::InvalidLenientWidth(e) => format!(
+            "`{}::{}` cannot be widened: {}",
+            e.container(),
+            e.field(),
+            e.reason()
+        ),
+        Error::LenientWidthOutOfRange(e) => format!(
+            "{} arrived as {}, which `{}` cannot hold exactly",
+            e.value(),
+            e.from(),
+            e.target()
+        ),
         _ => return None,
     })
 }
@@ -222,6 +234,8 @@ fn variant_name(err: &Error) -> &'static str {
         Error::UnknownField(_) => "Error::UnknownField",
         Error::MissingVariantAs(_) => "Error::MissingVariantAs",
         Error::DiscriminantOutOfRange(_) => "Error::DiscriminantOutOfRange",
+        Error::InvalidLenientWidth(_) => "Error::InvalidLenientWidth",
+        Error::LenientWidthOutOfRange(_) => "Error::LenientWidthOutOfRange",
         Error::Other(_) => "Error::Other",
         // Only present when the `snbt` feature is on; the textual codec has its
         // own parse errors.

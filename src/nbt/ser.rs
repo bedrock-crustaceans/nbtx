@@ -15,6 +15,10 @@
 //!   [`VariantAs`](crate::reflect::VariantAs); an enum without the attribute is
 //!   an [`Error::MissingVariantAs`](crate::Error::MissingVariantAs).
 //!
+//! [`lenient_width`](crate::Attr::LenientWidth) is deliberately *not* consulted
+//! here. It is a decode-only tolerance, so a field is always written with its
+//! own tag and re-encoding a leniently decoded document normalises it.
+//!
 //! The dynamic [`Value`] type is special-cased: whenever a node's shape is
 //! `Value`, its real Rust value is read via a downcast and encoded directly,
 //! preserving the exact tag of every child (so `ByteArray`/`IntArray`/
