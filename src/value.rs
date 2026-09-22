@@ -250,6 +250,38 @@ fn hash_f64<H: Hasher>(v: f64, state: &mut H) {
     state.write(&normalized.to_le_bytes());
 }
 
+/// Hashes a byte string **length first**.
+///
+/// Every variable-length payload goes through here (or writes its own length
+/// the same way) so that the bytes of one element can never be mistaken for the
+/// bytes of two: without the separator, `ByteArray([[1, 2], []])` and
+/// `ByteArray([[1], [2]])` — which are not equal — feed the hasher the identical
+/// stream. `Hash for [T]` length-prefixes for exactly this reason; `Hasher::write`
+/// on a raw slice does not.
+#[inline]
+fn hash_bytes<H: Hasher>(bytes: &[u8], state: &mut H) {
+    state.write_usize(bytes.len());
+    state.write(bytes);
+}
+
+/// Hashes a fixed-width slice length first. See [`hash_bytes`]: the elements
+/// themselves are self-delimiting, but a *sequence* of them is not.
+#[inline]
+fn hash_len_prefixed<T: Hash, H: Hasher>(items: &[T], state: &mut H) {
+    state.write_usize(items.len());
+    T::hash_slice(items, state);
+}
+
+/// Hashes a compound: entry count, then each key length-first and its value.
+/// See [`hash_bytes`] for why the lengths are there.
+fn hash_compound<H: Hasher>(map: &Compound, state: &mut H) {
+    state.write_usize(map.len());
+    for (k, v) in map {
+        hash_bytes(k.as_slice(), state);
+        v.hash(state);
+    }
+}
+
 impl PartialEq<Value> for Value {
     #[inline]
     fn eq(&self, rhs: &Value) -> bool {
@@ -433,7 +465,7 @@ impl Hash for Value {
             Value::Short(v) => state.write_i16(*v),
             Value::Int(v) => state.write_i32(*v),
             Value::Long(v) => state.write_i64(*v),
-            Value::String(v) => state.write(v.as_slice()),
+            Value::String(v) => hash_bytes(v.as_slice(), state),
             // `f32`/`f64` are not `Hash`, so hash their bytes — but only after
             // collapsing the two cases where equal floats have different bit
             // patterns, or a `Value` used as a map key would go missing:
@@ -441,16 +473,12 @@ impl Hash for Value {
             // `float_eq`, whatever payload it carries.
             Value::Float(v) => hash_f32(*v, state),
             Value::Double(v) => hash_f64(*v, state),
-            Value::Compound(map) => {
-                for (k, v) in map {
-                    state.write(k.as_slice());
-                    v.hash(state);
-                }
-            }
+            Value::Compound(map) => hash_compound(map, state),
             Value::List(v) => v.hash(state),
-            Value::ByteArray(v) => u8::hash_slice(v, state),
-            Value::IntArray(v) => i32::hash_slice(v, state),
-            Value::LongArray(v) => i64::hash_slice(v, state),
+            // Length first; see `hash_bytes`.
+            Value::ByteArray(v) => hash_bytes(v, state),
+            Value::IntArray(v) => hash_len_prefixed(v, state),
+            Value::LongArray(v) => hash_len_prefixed(v, state),
         }
     }
 }
@@ -934,10 +962,13 @@ impl Hash for ValueList {
     {
         // The element type leads, so that two *empty* lists of different types
         // — and in particular `End` and `Int([])`, which `PartialEq` keeps
-        // apart — do not all collapse onto the same hash.
+        // apart — do not all collapse onto the same hash. The element count
+        // follows it, which is what makes a *nested* list self-delimiting.
         state.write_u8(self.element_type() as u8);
+        state.write_usize(self.len());
         match self {
             Self::End => {}
+            // Fixed-width elements: the count above already separates them.
             Self::Byte(v) => i8::hash_slice(v, state),
             Self::Short(v) => i16::hash_slice(v, state),
             Self::Int(v) => i32::hash_slice(v, state),
@@ -945,19 +976,14 @@ impl Hash for ValueList {
             // Normalised, so that lists which `float_eq` calls equal hash alike.
             Self::Float(v) => v.iter().for_each(|f| hash_f32(*f, state)),
             Self::Double(v) => v.iter().for_each(|f| hash_f64(*f, state)),
-            Self::ByteArray(v) => v.iter().for_each(|b| state.write(b)),
-            Self::String(v) => v.iter().for_each(|s| state.write(s.as_slice())),
+            // Variable-length elements: each one is written length first, or the
+            // payloads would run together. See `hash_bytes`.
+            Self::ByteArray(v) => v.iter().for_each(|b| hash_bytes(b, state)),
+            Self::String(v) => v.iter().for_each(|s| hash_bytes(s.as_slice(), state)),
             Self::List(v) => Self::hash_slice(v, state),
-            Self::Compound(v) => {
-                for map in v {
-                    for (k, value) in map {
-                        state.write(k.as_slice());
-                        value.hash(state);
-                    }
-                }
-            }
-            Self::IntArray(v) => v.iter().for_each(|a| i32::hash_slice(a, state)),
-            Self::LongArray(v) => v.iter().for_each(|a| i64::hash_slice(a, state)),
+            Self::Compound(v) => v.iter().for_each(|map| hash_compound(map, state)),
+            Self::IntArray(v) => v.iter().for_each(|a| hash_len_prefixed(a, state)),
+            Self::LongArray(v) => v.iter().for_each(|a| hash_len_prefixed(a, state)),
         }
     }
 }

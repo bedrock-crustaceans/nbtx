@@ -427,3 +427,119 @@ fn a_list_can_key_a_hash_map() {
         "`-0.0` and `0.0` are the same key, as they are in `Value`"
     );
 }
+
+/// Variable-length element types are written length-first, so the payloads of
+/// two elements cannot be read as the payload of one.
+///
+/// Each pair below is a pair of *unequal* lists whose concatenated payload bytes
+/// are identical; without a separator they fed `Hasher::write` the same stream
+/// and collided every time. Hash inequality is never a guarantee in general —
+/// these assertions are about these specific inputs under `DefaultHasher`, which
+/// is what the collision was demonstrated with.
+#[test]
+fn variable_length_elements_do_not_collide_on_their_boundaries() {
+    let pairs: Vec<(ValueList, ValueList)> = vec![
+        (
+            ValueList::ByteArray(vec![vec![1, 2], vec![]]),
+            ValueList::ByteArray(vec![vec![1], vec![2]]),
+        ),
+        (
+            ValueList::String(vec![BString::from("ab")]),
+            ValueList::String(vec![BString::from("a"), BString::from("b")]),
+        ),
+        (
+            ValueList::IntArray(vec![vec![1, 2]]),
+            ValueList::IntArray(vec![vec![1], vec![2]]),
+        ),
+        (
+            ValueList::LongArray(vec![vec![1, 2]]),
+            ValueList::LongArray(vec![vec![1], vec![2]]),
+        ),
+        (
+            ValueList::List(vec![ValueList::Int(vec![1, 2])]),
+            ValueList::List(vec![ValueList::Int(vec![1]), ValueList::Int(vec![2])]),
+        ),
+        (
+            ValueList::Compound(vec![compound("ab", Value::Byte(1))]),
+            ValueList::Compound(vec![
+                compound("a", Value::Byte(1)),
+                compound("b", Value::Byte(1)),
+            ]),
+        ),
+    ];
+
+    for (lhs, rhs) in pairs {
+        assert_ne!(lhs, rhs, "the two lists are not equal to begin with");
+        assert_ne!(
+            hash_of(&lhs),
+            hash_of(&rhs),
+            "{lhs:?} and {rhs:?} must not hash alike"
+        );
+    }
+}
+
+/// The same boundary confusion one level up, in [`Value`]'s own `Hash`.
+///
+/// Both pairs below hashed identically before the compound entry count and the
+/// per-key length were written: the key bytes ran straight into the payload
+/// bytes, so where one ended and the other began was not recorded anywhere.
+#[test]
+fn value_payloads_do_not_collide_on_their_boundaries() {
+    let pairs: Vec<(Value, Value)> = vec![
+        // "a" + "bc"  vs  "ab" + "c".
+        (
+            Value::Compound(compound("a", Value::String(BString::from("bc")))),
+            Value::Compound(compound("ab", Value::String(BString::from("c")))),
+        ),
+        // "a" + {"b": 1b}  vs  "ab" + 1b.
+        (
+            Value::Compound(compound(
+                "a",
+                Value::Compound(compound("b", Value::Byte(1))),
+            )),
+            Value::Compound(compound("ab", Value::Byte(1))),
+        ),
+    ];
+
+    for (lhs, rhs) in pairs {
+        assert_ne!(lhs, rhs);
+        assert_ne!(
+            hash_of(&lhs),
+            hash_of(&rhs),
+            "{lhs:?} and {rhs:?} must not hash alike"
+        );
+    }
+}
+
+/// The separators must not break the half of the contract that actually has to
+/// hold: equal values hash alike, float normalisation included.
+#[test]
+fn equal_values_still_hash_alike_with_the_separators_in_place() {
+    for list in all_variants() {
+        assert_eq!(
+            hash_of(&list),
+            hash_of(&list.clone()),
+            "{list:?} must hash to itself"
+        );
+        assert_eq!(
+            hash_of(&Value::List(list.clone())),
+            hash_of(&Value::List(list.clone())),
+        );
+    }
+
+    // ...and across the float normalisation, at every nesting level.
+    assert_eq!(
+        hash_of(&ValueList::Double(vec![-0.0, f64::NAN])),
+        hash_of(&ValueList::Double(vec![
+            0.0,
+            f64::from_bits(0x7ff8_0000_dead_beef)
+        ])),
+    );
+    assert_eq!(
+        hash_of(&ValueList::Compound(vec![compound(
+            "k",
+            Value::Float(-0.0)
+        )])),
+        hash_of(&ValueList::Compound(vec![compound("k", Value::Float(0.0))])),
+    );
+}
