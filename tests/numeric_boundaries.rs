@@ -17,6 +17,7 @@
 #![cfg(feature = "nbt")]
 
 use bstr::BString;
+use nbtx::ValueList;
 use nbtx::{
     Compound, Value, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes, to_le_bytes,
     to_varint_bytes,
@@ -424,10 +425,7 @@ fn boundary_values_survive_inside_typed_arrays() {
 #[test]
 fn boundary_floats_survive_inside_a_list() {
     let floats = [0.0f32, -0.0, f32::MIN_POSITIVE, f32::from_bits(1), f32::NAN];
-    let doc = root(
-        "l",
-        Value::List(floats.iter().copied().map(Value::Float).collect()),
-    );
+    let doc = root("l", Value::List(ValueList::Float(floats.to_vec())));
 
     macro_rules! check {
         ($to:ident, $from:ident) => {{

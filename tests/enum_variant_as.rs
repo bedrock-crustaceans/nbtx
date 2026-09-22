@@ -597,7 +597,10 @@ mod binary {
         let bytes = to_be_bytes(&empty).unwrap();
         let decoded: Value = from_be_bytes(&mut bytes.as_slice()).unwrap();
         let list = decoded.as_compound().unwrap()[bstr::BStr::new("all")].clone();
-        assert_eq!(list, Value::List(Vec::new()));
+        // `ModeU8` declares `variant_as(u8)`, so its values are `Byte` tags and
+        // an *empty* `Vec<ModeU8>` keeps element type `Byte` on the wire rather
+        // than collapsing to `TAG_End`.
+        assert_eq!(list, Value::List(nbtx::ValueList::Byte(Vec::new())));
         assert_eq!(
             from_be_bytes::<Modes>(&mut bytes.as_slice()).unwrap(),
             empty

@@ -11,6 +11,7 @@ use nbtx::{Named, Value, from_be_bytes, to_be_bytes};
 
 const BIG_TEST_NBT: &[u8] = include_bytes!("fixtures/bigtest.nbt");
 const HELLO_WORLD_NBT: &[u8] = include_bytes!("fixtures/hello_world.nbt");
+#[cfg(feature = "preserve_order")]
 const PLAYER_NAN_VALUE_NBT: &[u8] = include_bytes!("fixtures/player_nan_value.nbt");
 #[cfg(feature = "preserve_order")]
 const SERVERS_DAT: &[u8] = include_bytes!("../examples/servers.dat");
@@ -20,34 +21,42 @@ const SERVERS_DAT: &[u8] = include_bytes!("../examples/servers.dat");
 #[cfg(feature = "preserve_order")]
 #[test]
 fn fixtures_reencode_byte_identically() {
-    // With `preserve_order`, a `Value` round-trip of `servers.dat` is
-    // byte-identical to the original. This is the
-    // strongest fixture assertion available through `Value`: `servers.dat` has
-    // an empty root name and its compounds carry several keys, so byte identity
-    // here proves that on-disk key order is reproduced exactly (a `BTreeMap`
-    // would have re-sorted them).
-    let value: Value = from_be_bytes(&mut SERVERS_DAT.to_vec().as_slice()).unwrap();
-    let encoded = to_be_bytes(&value).unwrap();
-    assert_eq!(
-        encoded.as_slice(),
-        SERVERS_DAT,
-        "servers.dat did not re-encode byte-identically"
-    );
+    // With `preserve_order`, a `Value` round-trip of these two is
+    // byte-identical to the original. This is the strongest fixture assertion
+    // available through `Value`: both have an empty root name and compounds
+    // carrying several keys, so byte identity proves on-disk key order is
+    // reproduced exactly (a `BTreeMap` would have re-sorted them).
+    //
+    // `player_nan_value.nbt` additionally holds an empty `List` whose on-disk
+    // element type is `Byte`. That used to be the one thing a bare `Value`
+    // could not carry — an empty `Vec<Value>` had nowhere to record it — and it
+    // re-encoded as the canonical `End`. `Value::List` now holds a `ValueList`,
+    // which names an element type whether or not it has elements, so the
+    // fixture is byte-identical too.
+    for (label, fixture) in [
+        ("servers.dat", SERVERS_DAT),
+        ("player_nan_value.nbt", PLAYER_NAN_VALUE_NBT),
+    ] {
+        let value: Value = from_be_bytes(&mut fixture.to_vec().as_slice()).unwrap();
+        let encoded = to_be_bytes(&value).unwrap();
+        assert_eq!(
+            encoded.as_slice(),
+            fixture,
+            "{label} did not re-encode byte-identically"
+        );
+    }
 }
 
 #[test]
 fn fixtures_reencode_stably() {
-    // The remaining fixtures cannot be *byte-identical* through a bare `Value`
-    // for reasons orthogonal to key order:
-    //   * `hello world` / `Level` carry a non-empty root compound name, which a
-    //     bare `Value` discards on read and re-emits empty (decode into
-    //     `Named<Value>` to keep it — see `hello_world_named_root_is_byte_identical`).
-    //   * `player_nan_value.nbt` contains an empty `List` whose on-disk element
-    //     type is `Byte`; an empty `Value::List` records no element type and so
-    //     re-emits the canonical `End` element type.
-    // In every case the re-encode is nonetheless a fixpoint (byte-stable), which
-    // confirms the codec itself is lossless up to those two normalisations.
-    for fixture in [HELLO_WORLD_NBT, BIG_TEST_NBT, PLAYER_NAN_VALUE_NBT] {
+    // These two cannot be *byte-identical* through a bare `Value` for a reason
+    // orthogonal to key order: `hello world` / `Level` carry a non-empty root
+    // compound name, which a bare `Value` discards on read and re-emits empty
+    // (decode into `Named<Value>` to keep it — see
+    // `hello_world_named_root_is_byte_identical`). The re-encode is nonetheless
+    // a fixpoint (byte-stable), which confirms the codec itself is lossless up
+    // to that one normalisation.
+    for fixture in [HELLO_WORLD_NBT, BIG_TEST_NBT] {
         let v1: Value = from_be_bytes(&mut fixture.to_vec().as_slice()).unwrap();
         let e1 = to_be_bytes(&v1).unwrap();
         let v2: Value = from_be_bytes(&mut e1.as_slice()).unwrap();

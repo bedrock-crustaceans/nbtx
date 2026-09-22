@@ -403,7 +403,7 @@ fn depth_limit_boundary_is_exactly_max_depth() {
 fn deep_nesting_is_rejected_on_encode() {
     let mut v = Value::Int(1);
     for _ in 0..2000 {
-        v = Value::List(vec![v]);
+        v = Value::List(nbtx::ValueList::try_from(vec![v]).expect("a singleton"));
     }
     let err = to_le_bytes(&v).expect_err("encoding a 2000-deep list must be refused");
     assert!(

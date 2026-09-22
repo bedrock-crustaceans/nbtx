@@ -26,7 +26,7 @@
 //! are gated on `nbt`/`snbt`.
 
 use facet::Facet;
-use nbtx::{Compound, Error, Value, from_value, to_value};
+use nbtx::{Compound, Error, Value, ValueList, from_value, to_value};
 
 // --- the types under test ---------------------------------------------------
 
@@ -447,7 +447,7 @@ fn narrowing_a_float_is_precision_checked() {
 #[test]
 fn one_declaration_widens_every_element() {
     let doc = comp(&[
-        ("ids", Value::List(vec![Value::Byte(1), Value::Byte(-2)])),
+        ("ids", Value::List(ValueList::Byte(vec![1, -2]))),
         ("fixed", Value::ByteArray(vec![3, 4])),
         ("maybe", Value::Byte(5)),
     ]);
@@ -509,7 +509,8 @@ fn a_struct_field_cannot_be_widened() {
 
 #[test]
 fn a_vec_of_structs_cannot_be_widened() {
-    let doc = comp(&[("inners", Value::List(vec![comp(&[("a", Value::Int(1))])]))]);
+    let inner = Compound::from_iter([(bstr::BString::from("a"), Value::Int(1))]);
+    let doc = comp(&[("inners", Value::List(ValueList::Compound(vec![inner])))]);
     invalid_placement::<BadVecOfStruct>(&doc, "inners");
 }
 
@@ -907,7 +908,7 @@ fn multiple_lenient_fields_do_not_interfere() {
 /// once (`Vec<Option<f32>>`), not just one.
 #[test]
 fn one_declaration_widens_through_a_vec_of_options() {
-    let doc = comp(&[("values", Value::List(vec![Value::Byte(1), Value::Byte(-2)]))]);
+    let doc = comp(&[("values", Value::List(ValueList::Byte(vec![1, -2])))]);
     assert_eq!(
         decode::<NestedOpt>(&doc).unwrap(),
         NestedOpt {

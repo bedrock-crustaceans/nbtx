@@ -13,19 +13,21 @@
 //! `-0.0 == 0.0` despite different bytes), so the binary properties compare with
 //! [`bit_eq`], which is exact.
 //!
-//! Lists are generated homogeneously on purpose: the wire format has one
-//! element-type byte per list, so a heterogeneous `Value::List` has no encoding
-//! at all (see `tag_semantics::list_heterogeneous_is_rejected_on_encode`).
-//! Generating them would only ever re-discover that error.
+//! Lists are generated as typed [`nbtx::ValueList`]s, one element type at a
+//! time: the wire format has a single element-type byte per list, so a mixture
+//! has no encoding at all and cannot be built in the first place. The empty
+//! lists that come out of this carry a real element type, which is exactly the
+//! case the byte-level fixpoint property is most likely to catch a bug in.
 
 #![cfg(feature = "nbt")]
 
 use bstr::BString;
 use nbtx::{
-    Compound, Value, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes, to_le_bytes,
-    to_varint_bytes,
+    Compound, Value, ValueList, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes,
+    to_le_bytes, to_varint_bytes,
 };
 use proptest::prelude::*;
+use proptest::strategy::Union;
 
 /// Invokes a caller-defined `check!($to, $from)` macro once per endianness.
 /// Passing the function *identifiers* (rather than binding them to a `let`)
@@ -84,14 +86,75 @@ fn arb_leaf(utf8: bool) -> BoxedStrategy<Value> {
     .boxed()
 }
 
-/// Drops every element that does not share the first one's tag, because a
-/// heterogeneous list cannot be encoded at all.
-fn homogenise(mut items: Vec<Value>) -> Vec<Value> {
-    let Some(first) = items.first().map(Value::discriminant) else {
-        return items;
+/// Coerces a generated element into a list, so that a list *of lists* can be
+/// built from the recursive element strategy without discarding anything: an
+/// element that is already a list is taken as it is, and anything else becomes
+/// a singleton list of itself.
+fn as_list(v: Value) -> ValueList {
+    match v {
+        Value::List(list) => list,
+        other => ValueList::try_from(vec![other]).expect("one element is homogeneous"),
+    }
+}
+
+/// [`as_list`] for the `Compound` element type.
+fn as_compound(v: Value) -> Compound {
+    match v {
+        Value::Compound(map) => map,
+        other => Compound::from_iter([(BString::from("v"), other)]),
+    }
+}
+
+/// Typed lists, one strategy per element type — which is what makes every
+/// generated list homogeneous *by construction* rather than by filtering, and
+/// what lets an empty list carry a real element type.
+///
+/// `inner` supplies the elements of the two container element types; the other
+/// ten are generated straight into their own typed vector. `Union` rather than
+/// `prop_oneof!`, which tops out at ten alternatives.
+fn arb_list(utf8: bool, inner: BoxedStrategy<Value>) -> BoxedStrategy<ValueList> {
+    use proptest::collection::vec;
+    let string = if utf8 {
+        vec(arb_utf8_string(8).prop_map(BString::from), 0..4)
+            .prop_map(ValueList::String)
+            .boxed()
+    } else {
+        vec(arb_raw_string(8), 0..4)
+            .prop_map(ValueList::String)
+            .boxed()
     };
-    items.retain(|v| v.discriminant() == first);
-    items
+    Union::new(vec![
+        // The untyped empty list, which is a distinct value from every empty
+        // typed one below.
+        Just(ValueList::End).boxed(),
+        vec(any::<i8>(), 0..4).prop_map(ValueList::Byte).boxed(),
+        vec(any::<i16>(), 0..4).prop_map(ValueList::Short).boxed(),
+        vec(any::<i32>(), 0..4).prop_map(ValueList::Int).boxed(),
+        vec(any::<i64>(), 0..4).prop_map(ValueList::Long).boxed(),
+        vec(any::<u32>(), 0..4)
+            .prop_map(|bits| ValueList::Float(bits.into_iter().map(f32::from_bits).collect()))
+            .boxed(),
+        vec(any::<u64>(), 0..4)
+            .prop_map(|bits| ValueList::Double(bits.into_iter().map(f64::from_bits).collect()))
+            .boxed(),
+        vec(vec(any::<u8>(), 0..6), 0..3)
+            .prop_map(ValueList::ByteArray)
+            .boxed(),
+        string,
+        vec(inner.clone(), 0..3)
+            .prop_map(|items| ValueList::List(items.into_iter().map(as_list).collect()))
+            .boxed(),
+        vec(inner, 0..3)
+            .prop_map(|items| ValueList::Compound(items.into_iter().map(as_compound).collect()))
+            .boxed(),
+        vec(vec(any::<i32>(), 0..4), 0..3)
+            .prop_map(ValueList::IntArray)
+            .boxed(),
+        vec(vec(any::<i64>(), 0..4), 0..3)
+            .prop_map(ValueList::LongArray)
+            .boxed(),
+    ])
+    .boxed()
 }
 
 /// Whole `Value` trees, at most five containers deep — well inside
@@ -100,8 +163,7 @@ fn arb_value(utf8: bool) -> BoxedStrategy<Value> {
     arb_leaf(utf8)
         .prop_recursive(4, 40, 4, move |inner| {
             prop_oneof![
-                proptest::collection::vec(inner.clone(), 0..4)
-                    .prop_map(|items| Value::List(homogenise(items))),
+                arb_list(utf8, inner.clone()).prop_map(Value::List),
                 proptest::collection::vec((arb_key(utf8), inner), 0..4)
                     .prop_map(|entries| Value::Compound(entries.into_iter().collect::<Compound>())),
             ]
@@ -115,17 +177,39 @@ fn bit_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
         (Value::Double(x), Value::Double(y)) => x.to_bits() == y.to_bits(),
-        (Value::List(x), Value::List(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| bit_eq(a, b))
+        (Value::List(x), Value::List(y)) => list_bit_eq(x, y),
+        (Value::Compound(x), Value::Compound(y)) => compound_bit_eq(x, y),
+        _ => a == b,
+    }
+}
+
+/// [`bit_eq`] for a typed list. Only the four element types that can *hold* a
+/// float or a container need their own arm; for the rest `ValueList`'s own
+/// equality is already exact (and it keeps the element types apart, so an empty
+/// `Byte` list is not an empty `Int` list).
+fn list_bit_eq(a: &ValueList, b: &ValueList) -> bool {
+    match (a, b) {
+        (ValueList::Float(x), ValueList::Float(y)) => {
+            x.len() == y.len() && std::iter::zip(x, y).all(|(p, q)| p.to_bits() == q.to_bits())
         }
-        (Value::Compound(x), Value::Compound(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .zip(y.iter())
-                    .all(|((ka, va), (kb, vb))| ka == kb && bit_eq(va, vb))
+        (ValueList::Double(x), ValueList::Double(y)) => {
+            x.len() == y.len() && std::iter::zip(x, y).all(|(p, q)| p.to_bits() == q.to_bits())
+        }
+        (ValueList::List(x), ValueList::List(y)) => {
+            x.len() == y.len() && std::iter::zip(x, y).all(|(p, q)| list_bit_eq(p, q))
+        }
+        (ValueList::Compound(x), ValueList::Compound(y)) => {
+            x.len() == y.len() && std::iter::zip(x, y).all(|(p, q)| compound_bit_eq(p, q))
         }
         _ => a == b,
     }
+}
+
+/// [`bit_eq`] for a compound: key order is part of the value under
+/// `preserve_order`, so the entries are compared pairwise in order.
+fn compound_bit_eq(a: &Compound, b: &Compound) -> bool {
+    a.len() == b.len()
+        && std::iter::zip(a, b).all(|((ka, va), (kb, vb))| ka == kb && bit_eq(va, vb))
 }
 
 /// Like [`bit_eq`], but treats any two NaNs as equal. SNBT renders a float as
@@ -136,17 +220,49 @@ fn snbt_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Float(x), Value::Float(y)) if x.is_nan() && y.is_nan() => true,
         (Value::Double(x), Value::Double(y)) if x.is_nan() && y.is_nan() => true,
-        (Value::List(x), Value::List(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| snbt_eq(a, b))
-        }
-        (Value::Compound(x), Value::Compound(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .zip(y.iter())
-                    .all(|((ka, va), (kb, vb))| ka == kb && snbt_eq(va, vb))
-        }
+        (Value::List(x), Value::List(y)) => list_snbt_eq(x, y),
+        (Value::Compound(x), Value::Compound(y)) => compound_snbt_eq(x, y),
         _ => bit_eq(a, b),
     }
+}
+
+/// [`snbt_eq`] for a typed list.
+///
+/// Two *empty* lists count as equal whatever their element types, because SNBT
+/// has no syntax for an empty list's element type: `[]` is all it can write,
+/// and `[]` reads back as `ValueList::End`. That is the one place the textual
+/// round-trip is lossy, and it is lossy in exactly this way.
+#[cfg(feature = "snbt")]
+fn list_snbt_eq(a: &ValueList, b: &ValueList) -> bool {
+    if a.is_empty() && b.is_empty() {
+        return true;
+    }
+    match (a, b) {
+        (ValueList::Float(x), ValueList::Float(y)) => {
+            x.len() == y.len()
+                && std::iter::zip(x, y)
+                    .all(|(p, q)| (p.is_nan() && q.is_nan()) || p.to_bits() == q.to_bits())
+        }
+        (ValueList::Double(x), ValueList::Double(y)) => {
+            x.len() == y.len()
+                && std::iter::zip(x, y)
+                    .all(|(p, q)| (p.is_nan() && q.is_nan()) || p.to_bits() == q.to_bits())
+        }
+        (ValueList::List(x), ValueList::List(y)) => {
+            x.len() == y.len() && std::iter::zip(x, y).all(|(p, q)| list_snbt_eq(p, q))
+        }
+        (ValueList::Compound(x), ValueList::Compound(y)) => {
+            x.len() == y.len() && std::iter::zip(x, y).all(|(p, q)| compound_snbt_eq(p, q))
+        }
+        _ => list_bit_eq(a, b),
+    }
+}
+
+/// [`snbt_eq`] for a compound. See [`compound_bit_eq`].
+#[cfg(feature = "snbt")]
+fn compound_snbt_eq(a: &Compound, b: &Compound) -> bool {
+    a.len() == b.len()
+        && std::iter::zip(a, b).all(|((ka, va), (kb, vb))| ka == kb && snbt_eq(va, vb))
 }
 
 proptest! {

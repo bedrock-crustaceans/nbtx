@@ -5,7 +5,7 @@
 use bstr::BString;
 use nbtx::Compound;
 use nbtx::{
-    Value, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes, to_le_bytes,
+    Value, ValueList, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes, to_le_bytes,
     to_varint_bytes,
 };
 
@@ -35,10 +35,7 @@ fn value_every_tag_byte_identical() {
         ("int_array".into(), Value::IntArray(vec![1, -2, 3])),
         ("long_array".into(), Value::LongArray(vec![100, -200])),
         ("string".into(), Value::String("Hello, World!".into())),
-        (
-            "list".into(),
-            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
-        ),
+        ("list".into(), Value::List(ValueList::Int(vec![1, 2, 3]))),
         (
             "compound".into(),
             Value::Compound(Compound::from([("k".into(), Value::Byte(1))])),
@@ -72,7 +69,7 @@ fn value_empty_containers_keep_tags() {
         ("byte_array".into(), Value::ByteArray(Vec::new())),
         ("int_array".into(), Value::IntArray(Vec::new())),
         ("long_array".into(), Value::LongArray(Vec::new())),
-        ("list".into(), Value::List(Vec::new())),
+        ("list".into(), Value::List(ValueList::End)),
         ("compound".into(), Value::Compound(Compound::new())),
     ]));
 
@@ -119,10 +116,7 @@ fn value_non_utf8_roundtrip() {
             "nested".into(),
             Value::Compound(Compound::from([(
                 raw_key.clone(),
-                Value::List(vec![
-                    Value::String(raw_value.clone()),
-                    Value::String("mixed".into()),
-                ]),
+                Value::List(ValueList::String(vec![raw_value.clone(), "mixed".into()])),
             )])),
         ),
     ]));
@@ -149,10 +143,7 @@ fn value_mixed_arrays_no_cross_contamination() {
         ("ba".into(), Value::ByteArray(vec![1, 2, 3])),
         ("ia".into(), Value::IntArray(vec![1, 2, 3])),
         ("la".into(), Value::LongArray(vec![1, 2, 3])),
-        (
-            "li".into(),
-            Value::List(vec![Value::Byte(1), Value::Byte(2), Value::Byte(3)]),
-        ),
+        ("li".into(), Value::List(ValueList::Byte(vec![1, 2, 3]))),
     ]));
 
     macro_rules! check {
@@ -171,26 +162,32 @@ fn value_mixed_arrays_no_cross_contamination() {
     for_each_endian!(check);
 }
 
-/// A heterogeneous `Value::List` cannot be encoded: the wire format stores one
-/// element-type byte for the whole list, so encoding mixed elements would
-/// desync the stream and silently drop trailing keys. It must error instead.
+/// A heterogeneous list cannot be encoded: the wire format stores one
+/// element-type byte for the whole list, so writing mixed elements would desync
+/// the stream and silently drop trailing keys.
+///
+/// `Value::List`'s payload is a [`ValueList`], so the mixture is now refused
+/// where the list is *built* — the document below can never be constructed in
+/// the first place, and the encoders have nothing left to reject.
 #[test]
 fn heterogeneous_list_errors_without_dropping_keys() {
+    let err = ValueList::try_from(vec![Value::Byte(1), Value::Int(300)]);
+    assert!(
+        matches!(err, Err(nbtx::Error::HeterogeneousList { .. })),
+        "expected HeterogeneousList error, got {err:?}"
+    );
+
+    // The document that would have carried it still encodes, once the bad key
+    // is left out: nothing about the surrounding compound was at fault.
     let value = Value::Compound(Compound::from([
-        (
-            "bad".into(),
-            Value::List(vec![Value::Byte(1), Value::Int(300)]),
-        ),
+        ("good".into(), Value::List(ValueList::Byte(vec![1]))),
         ("trailing".into(), Value::Int(7)),
     ]));
-
     macro_rules! check {
         ($to:ident, $from:ident) => {{
-            let err = $to(&value);
-            assert!(
-                matches!(err, Err(nbtx::Error::HeterogeneousList { .. })),
-                "expected HeterogeneousList error, got {err:?}"
-            );
+            let bytes = $to(&value).unwrap();
+            let back: Value = $from(&mut bytes.as_slice()).unwrap();
+            assert_eq!(back, value);
         }};
     }
     for_each_endian!(check);

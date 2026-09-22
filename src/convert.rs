@@ -22,11 +22,11 @@ use facet_core::{Def, ScalarType, Shape, Type, UserType};
 use facet_reflect::{Partial, Peek};
 
 use crate::reflect::{
-    EnumWire, Lenient, VariantAs, enum_wire, is_bstring, is_value, lenient_discriminant, list_tag,
-    reflect_err, scalar_tag, set_lenient, unexpected_type, unknown_field, unsupported,
-    unwrap_option, value_tag, wire_scalar,
+    EnumWire, Lenient, VariantAs, enum_wire, is_bstring, is_value, is_value_list,
+    lenient_discriminant, list_tag, reflect_err, scalar_tag, set_lenient, tag_of_shape,
+    unexpected_type, unknown_field, unsupported, unwrap_option, value_tag, wire_scalar,
 };
-use crate::{Compound, Error, FieldType, Value, check_depth};
+use crate::{Compound, Error, FieldType, Value, ValueList, check_depth};
 
 type Part<'f> = Partial<'f, true>;
 
@@ -49,7 +49,10 @@ type Part<'f> = Partial<'f, true>;
 ///   `f32` → `Float`, `f64` → `Double`
 /// * `String`/`&str`/[`bstr::BString`] → `String`
 /// * `Vec<u8>`/`[u8; N]` → `ByteArray`, `Vec<i32>` → `IntArray`, `Vec<i64>` →
-///   `LongArray`, any other list/array → `List`
+///   `LongArray`, any other list/array → `List`, whose element type comes from
+///   the element *shape* when the list is empty (an empty `Vec<String>` is a
+///   `List<String>`, not a `List<End>`)
+/// * a [`ValueList`] passes through as the `List` it already is
 /// * struct/map → `Compound`
 /// * a unit enum variant → whatever its mandatory
 ///   `#[facet(nbtx::variant_as(<mode>))]` declares: a `String` of its
@@ -75,9 +78,13 @@ type Part<'f> = Partial<'f, true>;
 ///
 /// [`Named<T>`](crate::Named) has no special meaning here: a `Value` tree has no
 /// document root to name, so a `Named` converts as the ordinary two-field
-/// compound it is. Nor is a heterogeneous [`Value::List`] rejected the way
-/// `to_bytes` rejects it — there is no single element-type byte to write, so a
-/// passed-through `Value` is simply left as it is.
+/// compound it is.
+///
+/// A `Vec<Value>` field whose elements do not all share one tag is an
+/// [`Error::HeterogeneousList`], exactly as it is in `to_bytes`: the elements
+/// have to be collected into a [`ValueList`], and NBT has no list that mixes
+/// tags. (An already-built [`Value::List`] cannot be heterogeneous in the first
+/// place — its payload is a `ValueList`.)
 ///
 /// # Examples
 ///
@@ -116,6 +123,13 @@ fn peek_to_value(peek: Peek, depth: usize) -> Result<Value, Error> {
         let v: &Value = peek.get::<Value>().map_err(reflect_err)?;
         check_value_depth(v, depth)?;
         return Ok(v.clone());
+    }
+
+    // A `ValueList` field is a `List` tag, element type and all.
+    if is_value_list(shape) {
+        let list: &ValueList = peek.get::<ValueList>().map_err(reflect_err)?;
+        check_list_depth(list, depth)?;
+        return Ok(Value::List(list.clone()));
     }
 
     // `bstr::BString` field: an NBT *string* of raw bytes, not a byte array.
@@ -160,21 +174,34 @@ fn peek_to_value(peek: Peek, depth: usize) -> Result<Value, Error> {
 /// values are convertible at all.
 fn check_value_depth(value: &Value, depth: usize) -> Result<(), Error> {
     match value {
-        Value::List(items) => {
-            check_depth(depth)?;
-            for item in items {
-                check_value_depth(item, depth + 1)?;
-            }
-        }
-        Value::Compound(map) => {
-            check_depth(depth)?;
-            for item in map.values() {
-                check_value_depth(item, depth + 1)?;
-            }
-        }
-        _ => {}
+        Value::List(list) => check_list_depth(list, depth),
+        Value::Compound(map) => check_compound_depth(map, depth),
+        _ => Ok(()),
     }
-    Ok(())
+}
+
+/// [`check_value_depth`] for a [`ValueList`]: the list itself is one level, and
+/// only its two container element types have anything below them.
+fn check_list_depth(list: &ValueList, depth: usize) -> Result<(), Error> {
+    check_depth(depth)?;
+    match list {
+        ValueList::List(items) => items
+            .iter()
+            .try_for_each(|item| check_list_depth(item, depth + 1)),
+        ValueList::Compound(items) => items
+            .iter()
+            .try_for_each(|map| check_compound_depth(map, depth + 1)),
+        // Every other element type is a leaf: a `ByteArray` or an `IntArray`
+        // holds numbers, not containers.
+        _ => Ok(()),
+    }
+}
+
+/// [`check_value_depth`] for a bare [`Compound`], which counts as one level.
+fn check_compound_depth(map: &Compound, depth: usize) -> Result<(), Error> {
+    check_depth(depth)?;
+    map.values()
+        .try_for_each(|item| check_value_depth(item, depth + 1))
 }
 
 fn scalar_to_value(peek: Peek, scalar: ScalarType) -> Result<Value, Error> {
@@ -242,11 +269,24 @@ fn seq_to_value(peek: Peek, depth: usize) -> Result<Value, Error> {
             Value::LongArray(out)
         }
         _ => {
+            // An *empty* sequence has no element to take a tag from, so the tag
+            // comes from the element shape — the same answer
+            // `nbt::ser::write_seq` writes into the element-type byte, which is
+            // what keeps an empty `Vec<String>` a `List<String>` on both paths.
+            if len == 0 {
+                return Ok(Value::List(ValueList::empty(
+                    tag_of_shape(elem_shape).unwrap_or(FieldType::End),
+                )));
+            }
             let mut out = Vec::with_capacity(len);
             for item in list.iter() {
                 out.push(peek_to_value(item, depth + 1)?);
             }
-            Value::List(out)
+            // The elements have to agree on one tag: a `Vec<Value>` is the only
+            // sequence that can disagree, and `TryFrom` is where that is caught
+            // — the same `HeterogeneousList` the binary writer raises, so both
+            // paths accept exactly the same values.
+            Value::List(ValueList::try_from(out)?)
         }
     })
 }
@@ -397,6 +437,15 @@ fn value_into<'f>(
     if is_value(shape) {
         check_value_depth(&value, depth)?;
         return p.set(value).map_err(reflect_err);
+    }
+
+    // A `ValueList` target takes a `List` verbatim — and only a `List`.
+    if is_value_list(shape) {
+        let Value::List(list) = value else {
+            return Err(unexpected_type(FieldType::List, value_tag(&value)));
+        };
+        check_list_depth(&list, depth)?;
+        return p.set(list).map_err(reflect_err);
     }
 
     // Option: the key was present, so this is `Some`.
@@ -562,9 +611,11 @@ fn value_into_seq<'f>(
     check_depth(depth)?;
     let tag = value_tag(&value);
     match value {
-        Value::List(items) => {
-            let len = items.len();
-            fill_seq(p, elem_shape, tag, len, items, array_len, depth, lenient)
+        Value::List(list) => {
+            let len = list.len();
+            // `ValueList` iterates as owned `Value`s, one per element, so a
+            // large typed list never materialises as a `Vec<Value>` first.
+            fill_seq(p, elem_shape, tag, len, list, array_len, depth, lenient)
         }
         Value::ByteArray(bytes) => {
             let len = bytes.len();

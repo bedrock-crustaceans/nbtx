@@ -72,8 +72,15 @@ pub enum Value {
     /// [`bstr::BString`] rather than a [`String`]. Construction from string
     /// literals still works ergonomically, e.g. `Value::String("abc".into())`.
     String(BString),
-    /// List of an arbitrary NBT value.
-    List(Vec<Value>),
+    /// A list of values that all share one NBT tag.
+    ///
+    /// The payload is a [`ValueList`], not a `Vec<Value>`: the wire format
+    /// stores a single element-type byte for the whole list, so the elements
+    /// cannot differ in tag, and an *empty* list still has to remember the tag
+    /// it would have held. Build one with
+    /// [`ValueList::try_from`](ValueList::try_from) from a `Vec<Value>`, or
+    /// name the variant directly (`ValueList::Byte(vec![1, 2])`).
+    List(ValueList),
     /// Key-value map.
     ///
     /// Keys are stored as [`bstr::BString`] because NBT string keys are not
@@ -163,7 +170,7 @@ impl Value {
         Float = f32,
         Double = f64,
         String = BString,
-        List = Vec<Self>,
+        List = ValueList,
         Compound = Compound,
         ByteArray = Vec<u8>,
         IntArray = Vec<i32>,
@@ -355,9 +362,11 @@ macro_rules! impl_slice_eq {
     }
 }
 
+// No `&[Value] => as_list` arm: a list's payload is a [`ValueList`], which is
+// not a slice of `Value` at all. Compare against a `ValueList` instead (see the
+// impls below), or against `list.to_values()`.
 impl_slice_eq!(
     &[u8] => as_byte_array,
-    &[Value] => as_list,
     &[i32] => as_int_array,
     &[i64] => as_long_array
 );
@@ -438,7 +447,7 @@ impl Hash for Value {
                     v.hash(state);
                 }
             }
-            Value::List(v) => Self::hash_slice(v, state),
+            Value::List(v) => v.hash(state),
             Value::ByteArray(v) => u8::hash_slice(v, state),
             Value::IntArray(v) => i32::hash_slice(v, state),
             Value::LongArray(v) => i64::hash_slice(v, state),
@@ -578,22 +587,29 @@ impl ValueList {
         matches!(self, Self::End)
     }
 
-    /// The empty list that `value`'s tag would build, for [`Self::push`] to
-    /// fill. Never [`Self::End`]: a [`Value`] always carries a real tag.
-    fn empty_for(value: &Value) -> Self {
-        match value {
-            Value::Byte(_) => Self::Byte(Vec::new()),
-            Value::Short(_) => Self::Short(Vec::new()),
-            Value::Int(_) => Self::Int(Vec::new()),
-            Value::Long(_) => Self::Long(Vec::new()),
-            Value::Float(_) => Self::Float(Vec::new()),
-            Value::Double(_) => Self::Double(Vec::new()),
-            Value::ByteArray(_) => Self::ByteArray(Vec::new()),
-            Value::String(_) => Self::String(Vec::new()),
-            Value::List(_) => Self::List(Vec::new()),
-            Value::Compound(_) => Self::Compound(Vec::new()),
-            Value::IntArray(_) => Self::IntArray(Vec::new()),
-            Value::LongArray(_) => Self::LongArray(Vec::new()),
+    /// The empty list of element type `element_type`.
+    ///
+    /// The variant an empty list has to be built at is exactly what a
+    /// `Vec<T>`-shaped Rust value cannot say for itself, so the codecs need a
+    /// way to say it: encoding an empty `Vec<String>` writes element type
+    /// `String`, and so must converting one to a [`Value`].
+    /// [`FieldType::End`] gives [`ValueList::End`].
+    #[must_use]
+    pub fn empty(element_type: FieldType) -> Self {
+        match element_type {
+            FieldType::End => Self::End,
+            FieldType::Byte => Self::Byte(Vec::new()),
+            FieldType::Short => Self::Short(Vec::new()),
+            FieldType::Int => Self::Int(Vec::new()),
+            FieldType::Long => Self::Long(Vec::new()),
+            FieldType::Float => Self::Float(Vec::new()),
+            FieldType::Double => Self::Double(Vec::new()),
+            FieldType::ByteArray => Self::ByteArray(Vec::new()),
+            FieldType::String => Self::String(Vec::new()),
+            FieldType::List => Self::List(Vec::new()),
+            FieldType::Compound => Self::Compound(Vec::new()),
+            FieldType::IntArray => Self::IntArray(Vec::new()),
+            FieldType::LongArray => Self::LongArray(Vec::new()),
         }
     }
 
@@ -611,7 +627,9 @@ impl ValueList {
     /// `expected` and `value`'s tag as `found`.
     pub fn push(&mut self, value: Value) -> Result<(), Error> {
         if self.is_end() {
-            *self = Self::empty_for(&value);
+            // A `Value` always carries a real tag, so this is never `End`
+            // again: the list comes out of here typed.
+            *self = Self::empty(value_tag(&value));
         }
         match (&mut *self, value) {
             (Self::Byte(items), Value::Byte(v)) => items.push(v),
@@ -622,9 +640,7 @@ impl ValueList {
             (Self::Double(items), Value::Double(v)) => items.push(v),
             (Self::ByteArray(items), Value::ByteArray(v)) => items.push(v),
             (Self::String(items), Value::String(v)) => items.push(v),
-            // While `Value::List` still holds a `Vec<Value>`, a nested list has
-            // to be typed on the way in; the next commit makes this a move.
-            (Self::List(items), Value::List(v)) => items.push(ValueList::try_from(v)?),
+            (Self::List(items), Value::List(v)) => items.push(v),
             (Self::Compound(items), Value::Compound(v)) => items.push(v),
             (Self::IntArray(items), Value::IntArray(v)) => items.push(v),
             (Self::LongArray(items), Value::LongArray(v)) => items.push(v),
@@ -657,7 +673,7 @@ impl ValueList {
             Self::Double(v) => Value::Double(*v.get(index)?),
             Self::ByteArray(v) => Value::ByteArray(v.get(index)?.clone()),
             Self::String(v) => Value::String(v.get(index)?.clone()),
-            Self::List(v) => Value::from(v.get(index)?.clone()),
+            Self::List(v) => Value::List(v.get(index)?.clone()),
             Self::Compound(v) => Value::Compound(v.get(index)?.clone()),
             Self::IntArray(v) => Value::IntArray(v.get(index)?.clone()),
             Self::LongArray(v) => Value::LongArray(v.get(index)?.clone()),
@@ -791,7 +807,7 @@ impl Iterator for ValueListIntoIter {
             Self::Double(it) => it.next().map(Value::Double),
             Self::ByteArray(it) => it.next().map(Value::ByteArray),
             Self::String(it) => it.next().map(Value::String),
-            Self::List(it) => it.next().map(Value::from),
+            Self::List(it) => it.next().map(Value::List),
             Self::Compound(it) => it.next().map(Value::Compound),
             Self::IntArray(it) => it.next().map(Value::IntArray),
             Self::LongArray(it) => it.next().map(Value::LongArray),
@@ -946,13 +962,35 @@ impl Hash for ValueList {
     }
 }
 
-/// Wraps a typed list into a [`Value::List`].
-///
-/// While `Value::List` still holds a `Vec<Value>`, this re-boxes each element;
-/// the next commit makes it the identity it is meant to be.
+/// Wraps a typed list into a [`Value::List`]. The payload *is* the list, so
+/// nothing is copied or re-tagged.
 impl From<ValueList> for Value {
     #[inline]
     fn from(value: ValueList) -> Value {
-        Value::List(value.into_values())
+        Value::List(value)
+    }
+}
+
+/// Compares a [`Value`] against a bare [`ValueList`], the way the [`Compound`]
+/// impls above let one be compared against a bare map. A `Value` that is not a
+/// list is never equal to one.
+impl PartialEq<ValueList> for Value {
+    #[inline]
+    fn eq(&self, rhs: &ValueList) -> bool {
+        self.as_list() == Some(rhs)
+    }
+}
+
+impl PartialEq<ValueList> for &Value {
+    #[inline]
+    fn eq(&self, rhs: &ValueList) -> bool {
+        self.as_list() == Some(rhs)
+    }
+}
+
+impl PartialEq<ValueList> for &mut Value {
+    #[inline]
+    fn eq(&self, rhs: &ValueList) -> bool {
+        self.as_list() == Some(rhs)
     }
 }

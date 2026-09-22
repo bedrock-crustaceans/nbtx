@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use bstr::BString;
 use facet::Facet;
-use nbtx::{Compound, Value, from_value, to_value};
+use nbtx::{Compound, Value, ValueList, from_value, to_value};
 
 // --- helpers ----------------------------------------------------------------
 
@@ -150,7 +150,7 @@ fn sample() -> AllTags {
         mode: Mode::Creative,
         dynamic: compound([
             ("kept", Value::LongArray(vec![9, 8])),
-            ("deep", Value::List(vec![Value::Byte(1), Value::Byte(2)])),
+            ("deep", Value::List(ValueList::Byte(vec![1, 2]))),
         ]),
         present: Some(42),
         absent: None,
@@ -298,7 +298,7 @@ fn value_passes_through_unchanged_in_both_directions() {
         ("double", Value::Double(2.25)),
         ("byte_array", Value::ByteArray(vec![0xde, 0xad])),
         ("string", Value::String(BString::from(vec![0xff, b'x']))),
-        ("list", Value::List(vec![Value::Int(1), Value::Int(2)])),
+        ("list", Value::List(ValueList::Int(vec![1, 2]))),
         ("compound", compound([("x", Value::Double(0.5))])),
         ("int_array", Value::IntArray(vec![1, 2, 3])),
         ("long_array", Value::LongArray(vec![-1, -2])),
@@ -324,7 +324,7 @@ fn value_typed_field_keeps_exact_child_tags() {
         any: Value,
     }
     let s = S {
-        any: Value::List(vec![Value::LongArray(vec![1]), Value::LongArray(vec![])]),
+        any: Value::List(ValueList::LongArray(vec![vec![1], vec![]])),
     };
     let v = to_value(&s).unwrap();
     assert_eq!(get(&v, "any"), &s.any);
@@ -463,7 +463,7 @@ fn allow_unknown_fields_skips_extra_keys() {
         ("extra", Value::Byte(2)),
         (
             "big",
-            compound([("nested", Value::List(vec![Value::Int(1)]))]),
+            compound([("nested", Value::List(ValueList::Int(vec![1])))]),
         ),
     ]))
     .unwrap();
@@ -529,9 +529,9 @@ fn tag_mismatch_reports_expected_and_found() {
     };
 
     // A `List` reaching a target that expects a scalar.
-    case!(i32, Value::List(vec![Value::Int(1)]), Int, List);
-    case!(bool, Value::List(vec![]), Byte, List);
-    case!(String, Value::List(vec![]), Str, List);
+    case!(i32, Value::List(ValueList::Int(vec![1])), Int, List);
+    case!(bool, Value::List(ValueList::End), Byte, List);
+    case!(String, Value::List(ValueList::End), Str, List);
     // Scalar-for-scalar mismatches: NBT's integer widths are distinct types.
     case!(i32, Value::Long(1), Int, Long);
     case!(i64, Value::Int(1), Long, Int);
@@ -544,7 +544,7 @@ fn tag_mismatch_reports_expected_and_found() {
     case!(Vec<i32>, Value::Int(1), List, Int);
     case!(BTreeMap<String, i32>, Value::Int(1), Comp, Int);
     case!(Inner, Value::Int(1), Comp, Int);
-    case!(Inner, Value::List(vec![]), Comp, List);
+    case!(Inner, Value::List(ValueList::End), Comp, List);
     // ... and a mismatch on a nested field, not just at the root.
     case!(Inner, compound([("id", Value::Byte(1))]), Int, Byte);
 }
@@ -563,7 +563,7 @@ fn typed_arrays_fill_any_matching_sequence_target() {
         vec![1, 2]
     );
     assert_eq!(
-        from_value::<Vec<u8>>(Value::List(vec![Value::Byte(-1)])).unwrap(),
+        from_value::<Vec<u8>>(Value::List(ValueList::Byte(vec![-1]))).unwrap(),
         vec![255u8]
     );
     // A fixed-size array must match the length exactly.
@@ -623,8 +623,10 @@ fn nested_structs_lists_and_maps_convert_structurally() {
 
     let structs = get(&v, "structs").as_list().expect("a List of Compounds");
     assert_eq!(structs.len(), 2);
-    assert_eq!(get(&structs[0], "id"), &Value::Int(1));
-    assert_eq!(get(&structs[1], "label"), &Value::String("two".into()));
+    let first = structs.get(0).expect("two elements");
+    let second = structs.get(1).expect("two elements");
+    assert_eq!(get(&first, "id"), &Value::Int(1));
+    assert_eq!(get(&second, "label"), &Value::String("two".into()));
 
     let map = get(&v, "map").as_compound().expect("a map is a Compound");
     // A `BTreeMap` iterates sorted, so its key order is fixed either way the
@@ -638,6 +640,11 @@ fn nested_structs_lists_and_maps_convert_structurally() {
 /// An empty sequence stays a `List` (not a typed array of nothing), and an
 /// empty compound stays a compound — the two cases where a tag has to be
 /// decided without a sample element.
+///
+/// An empty `List` additionally has to decide its *element* type with no
+/// element to ask, and it takes it from the element shape: an empty
+/// `Vec<String>` is a `List<String>`, not a `List<End>`. Both paths must agree,
+/// which is exactly what `v == via_bytes(&s)` pins here.
 #[cfg(feature = "nbt")]
 #[test]
 fn empty_containers_match_the_binary_codec() {
@@ -658,7 +665,12 @@ fn empty_containers_match_the_binary_codec() {
     };
     let v = to_value(&s).unwrap();
     assert_eq!(v, via_bytes(&s));
-    assert_eq!(get(&v, "list"), &Value::List(vec![]));
+    assert_eq!(get(&v, "list"), &Value::List(ValueList::String(vec![])));
+    assert_eq!(
+        get(&v, "nested"),
+        &Value::List(ValueList::IntArray(vec![])),
+        "a `Vec<Vec<i32>>` is a list of int arrays even when empty"
+    );
     assert_eq!(get(&v, "bytes"), &Value::ByteArray(vec![]));
     assert_eq!(get(&v, "ints"), &Value::IntArray(vec![]));
     assert_eq!(get(&v, "map"), &compound([]));
@@ -711,39 +723,41 @@ fn named_is_an_ordinary_compound_here() {
     assert_eq!(back.value, doc.value);
 }
 
-/// The second of the two places `to_value`/`from_value` and the binary codec
-/// disagree (see `named_is_an_ordinary_compound_here` for the first, and
-/// [`nbtx::to_value`]'s own "Notes" section for both): the wire format stores a
-/// single element-type byte for a whole `List`, so `to_bytes` rejects a
-/// `Value::List` whose elements do not all share the first element's tag. A
-/// `Value` tree being built or read directly has no such byte to write or
-/// check, so `to_value`/`from_value` have nothing to reject and a heterogeneous
-/// list simply passes through unchanged — pinned here rather than left as an
-/// assumption, since a passed-through `Value` that merely "doesn't crash" would
-/// let this divergence silently widen or narrow later.
+/// `to_value` and the binary codec used to disagree about a heterogeneous list:
+/// `to_bytes` had an element-type byte to write and rejected it, while
+/// `to_value` had nothing to check and passed it through. They now agree,
+/// because a `Value::List` carries a [`ValueList`] and a mixture cannot get that
+/// far — the `Vec<Value>` field below is refused identically by both.
+///
+/// (`named_is_an_ordinary_compound_here` covers the one remaining divergence
+/// between the two paths.)
 #[test]
-fn heterogeneous_list_is_accepted_by_to_value_and_from_value() {
-    let hetero = compound([("mixed", Value::List(vec![Value::Int(1), Value::Byte(2)]))]);
-    assert_eq!(to_value(&hetero).unwrap(), hetero);
-    assert_eq!(from_value::<Value>(hetero.clone()).unwrap(), hetero);
-}
-
-/// The binary codec really does reject the same value that
-/// `heterogeneous_list_is_accepted_by_to_value_and_from_value` accepts, so the
-/// two paths are pinned as genuinely disagreeing here rather than merely
-/// assumed to.
-#[cfg(feature = "nbt")]
-#[test]
-fn heterogeneous_list_rejected_by_to_bytes_unlike_to_value() {
-    let hetero = Value::List(vec![Value::Int(1), Value::Byte(2)]);
-    assert!(to_value(&hetero).is_ok(), "to_value must accept it");
+fn a_mixed_vec_of_values_is_refused_by_both_paths() {
+    #[derive(Facet)]
+    struct S {
+        mixed: Vec<Value>,
+    }
+    let doc = S {
+        mixed: vec![Value::Int(1), Value::Byte(2)],
+    };
+    assert!(
+        matches!(to_value(&doc), Err(nbtx::Error::HeterogeneousList { .. })),
+        "to_value must reject a mixed `Vec<Value>` field"
+    );
+    #[cfg(feature = "nbt")]
     assert!(
         matches!(
-            nbtx::to_be_bytes(&hetero),
+            nbtx::to_be_bytes(&doc),
             Err(nbtx::Error::HeterogeneousList { .. })
         ),
-        "to_be_bytes must still reject it"
+        "and so must to_be_bytes"
     );
+    // A list built out of the same elements is refused at construction, which
+    // is where the check really lives now.
+    assert!(matches!(
+        ValueList::try_from(vec![Value::Int(1), Value::Byte(2)]),
+        Err(nbtx::Error::HeterogeneousList { .. })
+    ));
 }
 
 // --- unsupported types ------------------------------------------------------
@@ -783,7 +797,7 @@ fn types_without_an_nbt_representation_are_refused() {
 fn nested_lists(depth: usize) -> Value {
     let mut v = Value::Int(1);
     for _ in 0..depth {
-        v = Value::List(vec![v]);
+        v = Value::List(ValueList::try_from(vec![v]).expect("a singleton"));
     }
     v
 }
@@ -852,10 +866,13 @@ fn deep_nesting_is_rejected_for_derived_structs() {
         .spawn(|| {
             // Each level is `{ "a": List[ <next level> ] }`, i.e. two containers.
             let mut nest = Nest { a: vec![] };
-            let mut tree = compound([("a", Value::List(vec![]))]);
+            let mut tree = compound([("a", Value::List(ValueList::End))]);
             for _ in 0..600 {
                 nest = Nest { a: vec![nest] };
-                tree = compound([("a", Value::List(vec![tree]))]);
+                tree = compound([(
+                    "a",
+                    Value::List(ValueList::try_from(vec![tree]).expect("a singleton")),
+                )]);
             }
 
             assert!(

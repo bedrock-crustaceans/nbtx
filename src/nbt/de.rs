@@ -4,7 +4,9 @@
 //! the target type. The NBT tag drives how bytes are read; the *target* Rust
 //! type drives how they are stored:
 //!
-//! * A dynamic [`Value`] target captures the exact tag of every node.
+//! * A dynamic [`Value`] target captures the exact tag of every node, and a
+//!   [`ValueList`](crate::ValueList) target captures a `TAG_List` with its
+//!   element type — an empty one included.
 //! * A `#[derive(Facet)]` struct matches NBT keys against field names
 //!   (`#[facet(rename = "...")]`-aware); an unknown key is an error unless the
 //!   struct opts out with `#[facet(nbtx::allow_unknown_fields)]`, and missing
@@ -34,8 +36,8 @@ use crate::named;
 use crate::nbt::io;
 // Shared with the SNBT codec and the `Value` conversion; see `crate::reflect`.
 use crate::reflect::{
-    Lenient, VariantAs, WireScalar, is_bstring, is_value, lenient_discriminant, reflect_err,
-    scalar_tag, set_lenient, unexpected_type, unknown_field, unsupported,
+    Lenient, VariantAs, WireScalar, is_bstring, is_value, is_value_list, lenient_discriminant,
+    reflect_err, scalar_tag, set_lenient, unexpected_type, unknown_field, unsupported,
 };
 use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, VarintEndian};
 
@@ -70,6 +72,11 @@ fn read_into<'f, F: EndiannessImpl, R: ReadBytesExt>(
     // A dynamic `Value` target swallows the whole (possibly nested) subtree.
     if is_value(shape) {
         return read_value_leaf::<F, R>(p, tag, r, depth);
+    }
+
+    // A `ValueList` target takes a `TAG_List` verbatim — and only a `TAG_List`.
+    if is_value_list(shape) {
+        return read_value_list_leaf::<F, R>(p, tag, r, depth);
     }
 
     // Option: the key was present, so this is `Some`.
@@ -109,6 +116,23 @@ fn read_value_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
 ) -> Result<Part<'f>, Error> {
     let v = io::read_value::<F, R>(r, tag, depth)?;
     p.set(v).map_err(reflect_err)
+}
+
+/// Reads a `TAG_List` into a [`ValueList`] target, keeping its element type
+/// exactly as it arrived (an empty typed list included). Split out of
+/// [`read_into`] for the same reason [`read_value_leaf`] is.
+#[inline(never)]
+fn read_value_list_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
+    p: Part<'f>,
+    tag: FieldType,
+    r: &mut R,
+    depth: usize,
+) -> Result<Part<'f>, Error> {
+    if tag != FieldType::List {
+        return Err(unexpected_type(FieldType::List, tag));
+    }
+    let list = io::read_list::<F, R>(r, depth)?;
+    p.set(list).map_err(reflect_err)
 }
 
 /// All the non-recursive target types. Split out of [`read_into`] to keep the

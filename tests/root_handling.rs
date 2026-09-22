@@ -12,8 +12,8 @@
 
 use bstr::BString;
 use nbtx::{
-    Compound, Named, Value, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes,
-    to_le_bytes, to_varint_bytes,
+    Compound, Named, Value, ValueList, from_be_bytes, from_le_bytes, from_varint_bytes,
+    to_be_bytes, to_le_bytes, to_varint_bytes,
 };
 
 fn hex(s: &str) -> Vec<u8> {
@@ -144,7 +144,7 @@ fn every_value_variant_roundtrips_as_a_root() {
         Value::Double(-2.25),
         Value::ByteArray(vec![1, 2, 3]),
         Value::String("hello".into()),
-        Value::List(vec![Value::Int(1), Value::Int(2)]),
+        Value::List(ValueList::Int(vec![1, 2])),
         comp(&[("a", Value::Int(1))]),
         Value::IntArray(vec![-1, 300]),
         Value::LongArray(vec![-1, 300]),

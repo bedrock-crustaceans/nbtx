@@ -13,7 +13,7 @@
 #![cfg(feature = "snbt")]
 
 use bstr::BString;
-use nbtx::{Compound, Value, from_string, to_string};
+use nbtx::{Compound, Value, ValueList, from_string, to_string};
 
 /// Parses `{a:<literal>}` and returns the value bound to `a`.
 #[track_caller]
@@ -486,7 +486,7 @@ fn typed_array_elements_accept_optional_case_insensitive_suffixes() {
     // Without the marker the same digits are a plain list.
     assert_eq!(
         parse_literal("[1b,2b]"),
-        Value::List(vec![Value::Byte(1), Value::Byte(2)])
+        Value::List(ValueList::Byte(vec![1, 2]))
     );
 }
 
@@ -498,7 +498,7 @@ fn an_empty_typed_array_keeps_its_tag() {
     assert_eq!(parse_literal("[B;]"), Value::ByteArray(vec![]));
     assert_eq!(parse_literal("[I;]"), Value::IntArray(vec![]));
     assert_eq!(parse_literal("[L;]"), Value::LongArray(vec![]));
-    assert_eq!(parse_literal("[]"), Value::List(vec![]));
+    assert_eq!(parse_literal("[]"), Value::List(ValueList::End));
 }
 
 /// A byte-array element is written signed but stored unsigned, so the negative
@@ -628,7 +628,7 @@ fn any_value_is_a_legal_root() {
     );
     assert_eq!(
         from_string::<Value>("[1,2]").unwrap(),
-        Value::List(vec![Value::Int(1), Value::Int(2)])
+        Value::List(ValueList::Int(vec![1, 2]))
     );
     assert_eq!(
         from_string::<Value>("[B;1b]").unwrap(),
@@ -654,8 +654,10 @@ fn nested_containers_parse_to_the_matching_shape() {
     let v: Value = from_string("{a:[{b:[1,2]},{b:[3]}]}").unwrap();
     let outer = get(&v, "a").as_list().unwrap();
     assert_eq!(outer.len(), 2);
-    assert_eq!(get(&outer[0], "b").as_list().unwrap().len(), 2);
-    assert_eq!(get(&outer[1], "b").as_list().unwrap().len(), 1);
+    let first = outer.get(0).unwrap();
+    let second = outer.get(1).unwrap();
+    assert_eq!(get(&first, "b").as_list().unwrap().len(), 2);
+    assert_eq!(get(&second, "b").as_list().unwrap().len(), 1);
 }
 
 /// Malformed structure is an error rather than a partial parse — every one of

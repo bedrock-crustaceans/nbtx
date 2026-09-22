@@ -22,13 +22,22 @@
 //! The dynamic [`Value`] type is special-cased: whenever a node's shape is
 //! `Value`, its real Rust value is read via a downcast and encoded directly,
 //! preserving the exact tag of every child (so `ByteArray`/`IntArray`/
-//! `LongArray`/`List` stay distinct) and non-UTF-8 `BString` payloads.
+//! `LongArray`/`List` stay distinct) and non-UTF-8 `BString` payloads. A
+//! [`ValueList`] field is special-cased the same way: it is already the wire
+//! form of a `TAG_List`, element type included, so it is written verbatim —
+//! which is how an *empty* typed list keeps its element type.
+//!
+//! A `Vec<Value>` field is the one sequence whose elements can disagree about
+//! their tag. A list has a single element-type byte, so a mixture has no
+//! encoding at all and is reported as
+//! [`Error::HeterogeneousList`](crate::Error::HeterogeneousList) rather than
+//! written into a stream that would decode as something else.
 
 use std::marker::PhantomData;
 
 use byteorder::WriteBytesExt;
 use facet::Facet;
-use facet_core::{Def, ScalarType, Shape, Type, UserType};
+use facet_core::{Def, ScalarType, Type, UserType};
 use facet_reflect::Peek;
 
 use crate::named;
@@ -36,43 +45,12 @@ use crate::nbt::io;
 // The type→tag convention and the error constructors are shared with the SNBT
 // codec and the `Value` conversion, so they live in `crate::reflect`.
 use crate::reflect::{
-    EnumWire, enum_tag, enum_wire, is_bstring, is_value, list_tag, reflect_err, scalar_tag,
-    unsupported, unwrap_option, value_tag,
+    EnumWire, enum_tag, enum_wire, is_bstring, is_value, is_value_list, list_tag, reflect_err,
+    scalar_tag, tag_of_shape, unsupported, unwrap_option, value_tag,
 };
-use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, Value, VarintEndian};
-
-/// Maps a static element/field shape to an NBT tag, without a concrete value.
-///
-/// Returns `None` for shapes whose tag cannot be known statically (e.g. a
-/// dynamic [`Value`] element), in which case the caller falls back to
-/// `TAG_End` (only relevant for empty lists).
-fn tag_of_shape(shape: &Shape) -> Option<FieldType> {
-    if is_value(shape) {
-        return None;
-    }
-    if is_bstring(shape) {
-        return Some(FieldType::String);
-    }
-    if let Some(scalar) = ScalarType::try_from_shape(shape) {
-        return scalar_tag(scalar);
-    }
-    match shape.def {
-        Def::List(def) => Some(list_tag(def.t())),
-        Def::Array(def) => Some(list_tag(def.t())),
-        Def::Slice(def) => Some(list_tag(def.t())),
-        Def::Map(_) => Some(FieldType::Compound),
-        Def::Option(def) => tag_of_shape(def.t()),
-        _ => match shape.ty {
-            Type::User(UserType::Struct(_)) => Some(FieldType::Compound),
-            // An enum's tag follows from its declared `variant_as` mode alone.
-            // A missing/invalid one is not reported here — this is the
-            // best-effort path for the element type of an *empty* list, and the
-            // real error surfaces the moment a value is written.
-            Type::User(UserType::Enum(_)) => enum_tag(shape).ok(),
-            _ => None,
-        },
-    }
-}
+use crate::{
+    BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, Value, ValueList, VarintEndian,
+};
 
 /// Determines the NBT tag for a concrete value.
 fn tag_of(peek: Peek) -> Result<FieldType, Error> {
@@ -80,6 +58,9 @@ fn tag_of(peek: Peek) -> Result<FieldType, Error> {
     if is_value(shape) {
         let v: &Value = peek.get::<Value>().map_err(reflect_err)?;
         return Ok(value_tag(v));
+    }
+    if is_value_list(shape) {
+        return Ok(FieldType::List);
     }
     if is_bstring(shape) {
         return Ok(FieldType::String);
@@ -122,6 +103,14 @@ fn write_payload<F: EndiannessImpl, W: WriteBytesExt>(
     if is_value(shape) {
         let v: &Value = peek.get::<Value>().map_err(reflect_err)?;
         return io::write_value::<F, W>(w, v, depth);
+    }
+
+    // A `ValueList` field is a `TAG_List` written verbatim, element type and
+    // all — including the element type of an empty one, which no `Vec<T>` field
+    // can express.
+    if is_value_list(shape) {
+        let list: &ValueList = peek.get::<ValueList>().map_err(reflect_err)?;
+        return io::write_list::<F, W>(w, list, depth);
     }
 
     // `bstr::BString` field: write its raw bytes as a `String` tag payload.
@@ -225,13 +214,31 @@ fn write_seq<F: EndiannessImpl, W: WriteBytesExt>(
         }
         _ => {
             // A generic `List`: element type tag first, then length, then bodies.
+            //
+            // The element type is written *once* for the whole list, so an
+            // element carrying a different tag would desync the stream — every
+            // later element would be decoded against the declared type. When the
+            // tag follows from the element *shape* (`static_tag`) the elements
+            // cannot disagree and nothing needs checking; when it does not — a
+            // `Vec<Value>`, a `Vec<Option<Value>>` — each element is checked and
+            // a mixture is refused.
+            let static_tag = tag_of_shape(elem_shape);
             let elem_tag = match list.iter().next() {
                 Some(first) => tag_of(first)?,
-                None => tag_of_shape(elem_shape).unwrap_or(FieldType::End),
+                None => static_tag.unwrap_or(FieldType::End),
             };
             w.write_u8(elem_tag as u8)?;
             io::write_seq_len::<F, W>(w, len)?;
             for item in list.iter() {
+                if static_tag.is_none() {
+                    let tag = tag_of(item)?;
+                    if tag != elem_tag {
+                        return Err(Error::HeterogeneousList {
+                            expected: elem_tag,
+                            found: tag,
+                        });
+                    }
+                }
                 write_payload::<F, W>(w, item, depth + 1)?;
             }
         }

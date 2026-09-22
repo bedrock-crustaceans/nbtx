@@ -16,9 +16,9 @@
 use bstr::BString;
 use facet::Facet;
 use nbtx::{
-    BigEndian, Compound, EndiannessImpl, LittleEndian, Named, Serializer, Value, Variant,
-    VarintEndian, from_be_bytes, from_bytes, to_be_bytes, to_be_bytes_in, to_bytes, to_bytes_in,
-    to_le_bytes_in, to_varint_bytes, to_varint_bytes_in,
+    BigEndian, Compound, EndiannessImpl, LittleEndian, Named, Serializer, Value, ValueList,
+    Variant, VarintEndian, from_be_bytes, from_bytes, to_be_bytes, to_be_bytes_in, to_bytes,
+    to_bytes_in, to_le_bytes_in, to_varint_bytes, to_varint_bytes_in,
 };
 
 fn comp(entries: &[(&str, Value)]) -> Value {
@@ -74,7 +74,7 @@ fn a_reader_is_left_positioned_after_the_document_it_decoded() {
     let mut stream = Vec::new();
     to_be_bytes_in(&mut stream, &comp(&[("first", Value::Byte(1))])).unwrap();
     to_be_bytes_in(&mut stream, &Value::String("second".into())).unwrap();
-    to_be_bytes_in(&mut stream, &Value::List(vec![Value::Long(3)])).unwrap();
+    to_be_bytes_in(&mut stream, &Value::List(ValueList::Long(vec![3]))).unwrap();
     stream.extend_from_slice(b"trailing bytes that are not NBT");
 
     let mut cursor = stream.as_slice();
@@ -88,7 +88,7 @@ fn a_reader_is_left_positioned_after_the_document_it_decoded() {
     );
     assert_eq!(
         from_be_bytes::<Value>(&mut cursor).unwrap(),
-        Value::List(vec![Value::Long(3)])
+        Value::List(ValueList::Long(vec![3]))
     );
     assert_eq!(
         cursor, b"trailing bytes that are not NBT",
@@ -120,15 +120,18 @@ fn consecutive_varint_documents_decode_from_one_reader() {
 /// explicit rather than assumed either way.
 #[test]
 fn a_failed_in_write_leaves_a_partial_document_behind() {
-    // The heterogeneous list is detected only once the encoder has already
+    // The over-long string is detected only once the encoder has already
     // written the root header and the entry's tag and key.
     let doc = comp(&[
         ("ok", Value::Int(1)),
-        ("bad", Value::List(vec![Value::Byte(1), Value::Int(2)])),
+        (
+            "bad",
+            Value::String(bstr::BString::from(vec![b'x'; nbtx::MAX_STRING_LEN + 1])),
+        ),
     ]);
     let mut buf = Vec::new();
     let err = to_be_bytes_in(&mut buf, &doc).expect_err("must fail");
-    assert!(matches!(err, nbtx::Error::HeterogeneousList { .. }));
+    assert!(matches!(err, nbtx::Error::StringTooLong(_)));
     assert!(
         !buf.is_empty(),
         "the encoder streams, so a failure leaves partial output"

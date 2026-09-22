@@ -768,12 +768,21 @@ pub enum Error {
     Unsupported(Unsupported),
     #[error("{0}")]
     Other(String),
-    /// An NBT `List` tag contained elements of more than one tag type.
+    /// A would-be NBT `List` held elements of more than one tag type.
     ///
     /// The wire format stores a single element-type byte for the whole list, so
-    /// a [`Value::List`](crate::Value::List) whose elements do not all share the
-    /// first element's tag cannot be encoded without silently corrupting the
-    /// stream.
+    /// a list that mixes tags has no encoding at all: every element after the
+    /// first differing one would be decoded against the declared element type.
+    /// A [`ValueList`](crate::ValueList) cannot be in that state, which is why
+    /// this is raised at the boundaries where one is *built* or where a
+    /// `Vec<Value>` stands in for one:
+    ///
+    /// * [`ValueList::try_from`](crate::ValueList) and
+    ///   [`ValueList::push`](crate::ValueList::push),
+    /// * the SNBT parser, on a `[1b,"x"]`-style literal (vanilla Minecraft
+    ///   rejects those too),
+    /// * all three serializers, for a `Vec<Value>` field whose elements
+    ///   disagree.
     #[error("heterogeneous NBT list: every element must be {expected}, found {found}")]
     HeterogeneousList {
         /// The tag of the first (reference) element.

@@ -11,8 +11,8 @@
 
 use bstr::BString;
 use nbtx::{
-    Compound, Value, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes, to_le_bytes,
-    to_varint_bytes,
+    Compound, Value, ValueList, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes,
+    to_le_bytes, to_varint_bytes,
 };
 
 macro_rules! for_each_endian {
@@ -23,13 +23,15 @@ macro_rules! for_each_endian {
     };
 }
 
+fn map(entries: &[(&str, Value)]) -> Compound {
+    entries
+        .iter()
+        .map(|(k, v)| (BString::from(*k), v.clone()))
+        .collect()
+}
+
 fn comp(entries: &[(&str, Value)]) -> Value {
-    Value::Compound(
-        entries
-            .iter()
-            .map(|(k, v)| (BString::from(*k), v.clone()))
-            .collect::<Compound>(),
-    )
+    Value::Compound(map(entries))
 }
 
 /// Round-trips `doc` in every variant and asserts it comes back unchanged and
@@ -57,11 +59,11 @@ fn roundtrips(label: &str, doc: &Value) {
 fn a_list_of_lists_may_hold_differently_typed_inner_lists() {
     let doc = comp(&[(
         "l",
-        Value::List(vec![
-            Value::List(vec![Value::Byte(1), Value::Byte(2)]),
-            Value::List(vec![Value::String(BString::from("x"))]),
-            Value::List(vec![]),
-        ]),
+        Value::List(ValueList::List(vec![
+            ValueList::Byte(vec![1, 2]),
+            ValueList::String(vec![BString::from("x")]),
+            ValueList::End,
+        ])),
     )]);
     roundtrips("list of lists", &doc);
 
@@ -77,11 +79,11 @@ fn a_list_of_lists_may_hold_differently_typed_inner_lists() {
 fn a_list_of_compounds_may_hold_different_key_sets() {
     let doc = comp(&[(
         "l",
-        Value::List(vec![
-            comp(&[("a", Value::Int(1))]),
-            comp(&[("b", Value::Long(2)), ("c", Value::Byte(3))]),
-            comp(&[]),
-        ]),
+        Value::List(ValueList::Compound(vec![
+            map(&[("a", Value::Int(1))]),
+            map(&[("b", Value::Long(2)), ("c", Value::Byte(3))]),
+            map(&[]),
+        ])),
     )]);
     roundtrips("list of compounds", &doc);
 }
@@ -94,25 +96,15 @@ fn lists_of_typed_arrays_roundtrip() {
     for (label, doc) in [
         (
             "byte arrays",
-            Value::List(vec![
-                Value::ByteArray(vec![1, 2]),
-                Value::ByteArray(vec![]),
-                Value::ByteArray(vec![0xff]),
-            ]),
+            Value::List(ValueList::ByteArray(vec![vec![1, 2], vec![], vec![0xff]])),
         ),
         (
             "int arrays",
-            Value::List(vec![
-                Value::IntArray(vec![-1]),
-                Value::IntArray(vec![1, 2, 3]),
-            ]),
+            Value::List(ValueList::IntArray(vec![vec![-1], vec![1, 2, 3]])),
         ),
         (
             "long arrays",
-            Value::List(vec![
-                Value::LongArray(vec![i64::MIN]),
-                Value::LongArray(vec![]),
-            ]),
+            Value::List(ValueList::LongArray(vec![vec![i64::MIN], vec![]])),
         ),
     ] {
         roundtrips(label, &comp(&[("l", doc)]));
@@ -126,7 +118,7 @@ fn lists_of_typed_arrays_roundtrip() {
 fn a_list_of_empty_lists_keeps_its_own_element_type() {
     let doc = comp(&[(
         "l",
-        Value::List(vec![Value::List(vec![]), Value::List(vec![])]),
+        Value::List(ValueList::List(vec![ValueList::End, ValueList::End])),
     )]);
     roundtrips("list of empty lists", &doc);
 
@@ -146,10 +138,13 @@ fn a_list_of_empty_lists_keeps_its_own_element_type() {
 fn alternating_lists_and_compounds_roundtrip() {
     let doc = comp(&[(
         "a",
-        Value::List(vec![comp(&[(
+        Value::List(ValueList::Compound(vec![map(&[(
             "b",
-            Value::List(vec![comp(&[("c", Value::List(vec![Value::Double(1.5)]))])]),
-        )])]),
+            Value::List(ValueList::Compound(vec![map(&[(
+                "c",
+                Value::List(ValueList::Double(vec![1.5])),
+            )])])),
+        )])])),
     )]);
     roundtrips("alternating containers", &doc);
 }
@@ -159,12 +154,16 @@ fn alternating_lists_and_compounds_roundtrip() {
 /// The heterogeneity check must fire wherever the odd element sits, including at
 /// the very end of a long list — a check that only compared the first two
 /// elements would pass this.
+///
+/// The check now lives in `ValueList::try_from` rather than in the encoder: a
+/// mixed list cannot be built at all, so there is nothing left for `to_bytes`
+/// to reject.
 #[test]
 fn a_heterogeneous_list_is_caught_wherever_the_odd_element_sits() {
     for bad_at in [1usize, 5, 9] {
         let mut items: Vec<Value> = (0..10).map(Value::Byte).collect();
         items[bad_at] = Value::Int(0);
-        let res = to_be_bytes(&Value::List(items));
+        let res = ValueList::try_from(items);
         assert!(
             matches!(res, Err(nbtx::Error::HeterogeneousList { .. })),
             "an Int at index {bad_at} must be caught, got {res:?}"
@@ -172,27 +171,31 @@ fn a_heterogeneous_list_is_caught_wherever_the_odd_element_sits() {
     }
 }
 
-/// The check applies at every nesting level, not only to a list at the root: a
-/// mixed list buried inside two containers must still refuse to encode rather
-/// than desyncing the stream from the middle.
+/// The check applies to a list at every nesting level, not only one at the
+/// root — and it applies as the list is *built*, so a document containing a
+/// mixed list can never come into existence to be encoded.
 #[test]
 fn a_heterogeneous_list_nested_deep_is_still_rejected() {
+    // The inner list is the mixed one, two containers down.
+    let mut inner = ValueList::Byte(vec![1]);
+    assert!(matches!(
+        inner.push(Value::Short(2)),
+        Err(nbtx::Error::HeterogeneousList { .. })
+    ));
+    assert!(matches!(
+        ValueList::try_from(vec![Value::Byte(1), Value::Short(2)]),
+        Err(nbtx::Error::HeterogeneousList { .. })
+    ));
+    // The refused push left the list untouched, so the document around it is
+    // still encodable — the failure is local to the list, not to the document.
     let doc = comp(&[(
         "outer",
-        Value::List(vec![comp(&[(
+        Value::List(ValueList::Compound(vec![map(&[(
             "inner",
-            Value::List(vec![Value::Byte(1), Value::Short(2)]),
-        )])]),
+            Value::List(inner),
+        )])])),
     )]);
-    macro_rules! check {
-        ($to:ident, $from:ident) => {{
-            assert!(matches!(
-                $to(&doc),
-                Err(nbtx::Error::HeterogeneousList { .. })
-            ));
-        }};
-    }
-    for_each_endian!(check);
+    roundtrips("nested list after a refused push", &doc);
 }
 
 /// Two *different container* tags in one list are heterogeneous too — a `List`
@@ -200,8 +203,8 @@ fn a_heterogeneous_list_nested_deep_is_still_rejected() {
 /// both are containers.
 #[test]
 fn containers_of_different_tags_may_not_share_a_list() {
-    let doc = Value::List(vec![Value::List(vec![]), comp(&[])]);
-    match to_be_bytes(&doc) {
+    let doc = ValueList::try_from(vec![Value::List(ValueList::End), comp(&[])]);
+    match doc {
         Err(nbtx::Error::HeterogeneousList { expected, found }) => {
             assert_eq!(expected, nbtx::FieldType::List);
             assert_eq!(found, nbtx::FieldType::Compound);
@@ -209,11 +212,8 @@ fn containers_of_different_tags_may_not_share_a_list() {
         other => panic!("expected HeterogeneousList, got {other:?}"),
     }
     // Likewise the three array tags, which look alike but are not.
-    let arrays = Value::List(vec![Value::IntArray(vec![1]), Value::LongArray(vec![1])]);
-    assert!(matches!(
-        to_be_bytes(&arrays),
-        Err(nbtx::Error::HeterogeneousList { .. })
-    ));
+    let arrays = ValueList::try_from(vec![Value::IntArray(vec![1]), Value::LongArray(vec![1])]);
+    assert!(matches!(arrays, Err(nbtx::Error::HeterogeneousList { .. })));
 }
 
 /// A one-element list can never be heterogeneous, so every tag must be usable as
@@ -230,13 +230,14 @@ fn a_single_element_list_is_valid_for_every_tag() {
         Value::Double(1.0),
         Value::ByteArray(vec![1]),
         Value::String(BString::from("s")),
-        Value::List(vec![Value::Int(1)]),
+        Value::List(ValueList::Int(vec![1])),
         comp(&[("k", Value::Int(1))]),
         Value::IntArray(vec![1]),
         Value::LongArray(vec![1]),
     ] {
         let tag = element.discriminant();
-        let doc = comp(&[("l", Value::List(vec![element]))]);
+        let list = ValueList::try_from(vec![element]).expect("one element is homogeneous");
+        let doc = comp(&[("l", Value::List(list))]);
         roundtrips(&format!("singleton list of tag {tag}"), &doc);
         assert_eq!(
             to_be_bytes(&doc).unwrap()[7],
@@ -331,7 +332,7 @@ fn the_first_wins_rule_applies_inside_nested_compounds() {
     let list = back.as_compound().unwrap()[&BString::from("l")]
         .as_list()
         .unwrap();
-    let inner = list[0].as_compound().unwrap();
+    let inner = list.get(0).unwrap().into_compound().unwrap();
     assert_eq!(inner.len(), 1);
     assert_eq!(inner.get(&BString::from("d")), Some(&Value::Int(1)));
 }
@@ -357,7 +358,7 @@ fn containers_larger_than_the_preallocation_cap_roundtrip() {
         // per-element writer, which has no bulk path to fall back on.
         (
             "list",
-            Value::List((0..5_000i32).map(|i| Value::Short(i as i16)).collect()),
+            Value::List(ValueList::Short((0..5_000i32).map(|i| i as i16).collect())),
         ),
     ]);
     roundtrips("large containers", &doc);
@@ -403,7 +404,7 @@ fn a_document_one_container_below_the_depth_limit_roundtrips() {
     // The root compound is container 1, so nest MAX_DEPTH - 2 lists inside it.
     let mut inner = Value::Byte(1);
     for _ in 0..nbtx::MAX_DEPTH - 2 {
-        inner = Value::List(vec![inner]);
+        inner = Value::List(ValueList::try_from(vec![inner]).expect("a singleton"));
     }
     let doc = comp(&[("deep", inner)]);
 
@@ -439,7 +440,7 @@ fn all_five_empty_containers_keep_their_tags() {
         ("ba", Value::ByteArray(vec![])),
         ("ia", Value::IntArray(vec![])),
         ("la", Value::LongArray(vec![])),
-        ("li", Value::List(vec![])),
+        ("li", Value::List(ValueList::End)),
         ("co", comp(&[])),
     ]);
     roundtrips("empty containers", &doc);
@@ -461,10 +462,10 @@ fn all_five_empty_containers_keep_their_tags() {
 fn empty_containers_nested_inside_a_list_roundtrip() {
     roundtrips(
         "empty list in list",
-        &comp(&[("l", Value::List(vec![Value::List(vec![])]))]),
+        &comp(&[("l", Value::List(ValueList::List(vec![ValueList::End])))]),
     );
     roundtrips(
         "empty compound in list",
-        &comp(&[("l", Value::List(vec![comp(&[])]))]),
+        &comp(&[("l", Value::List(ValueList::Compound(vec![map(&[])])))]),
     );
 }

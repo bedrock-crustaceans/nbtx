@@ -5,7 +5,7 @@
 use bstr::BString;
 use facet::Facet;
 use nbtx::Compound;
-use nbtx::{Value, from_string, to_string};
+use nbtx::{Value, ValueList, from_string, to_string};
 
 const WHITESPACED_ALL: &str = r#"
     {
@@ -130,7 +130,7 @@ fn snbt_parse_tolerance() {
     // `[1b,2b,3b]` (no `B;`) is a plain list of bytes, not a ByteArray.
     assert_eq!(
         compound.get(&BString::from("byte_array")).unwrap(),
-        &Value::List(vec![Value::Byte(1), Value::Byte(2), Value::Byte(3)])
+        &Value::List(ValueList::Byte(vec![1, 2, 3]))
     );
 }
 
@@ -149,10 +149,7 @@ fn value_all_tags_roundtrip() {
         ("int_array".into(), Value::IntArray(vec![1, -2, 3])),
         ("long_array".into(), Value::LongArray(vec![10, 20, 30])),
         ("string".into(), Value::String("hi".into())),
-        (
-            "list".into(),
-            Value::List(vec![Value::Int(1), Value::Int(2)]),
-        ),
+        ("list".into(), Value::List(ValueList::Int(vec![1, 2]))),
         (
             "nested".into(),
             Value::Compound(Compound::from([("x".into(), Value::Byte(9))])),
@@ -287,7 +284,7 @@ fn max_depth_boundary_is_512_containers() {
 fn deep_nesting_is_rejected_on_serialize() {
     let mut v = Value::Int(1);
     for _ in 0..2000 {
-        v = Value::List(vec![v]);
+        v = Value::List(ValueList::try_from(vec![v]).expect("a singleton"));
     }
     let err = to_string(&v).expect_err("serializing a 2000-deep list must be refused");
     assert!(
@@ -460,14 +457,30 @@ fn non_compound_root_rejected() {
     assert!(res.is_err(), "a compound root is required");
 }
 
-/// KNOWN GAP: a list may hold only one element type on the wire, but the parser
-/// builds a heterogeneous `Value::List` without complaint — the error surfaces
-/// only if it is later binary-encoded.
+/// A list may hold only one element type, so the parser refuses a mixture
+/// outright — as vanilla Minecraft's own parser does. The text is not
+/// representable, so accepting it would only defer the failure to encode time.
 #[test]
-#[ignore = "KNOWN GAP: the SNBT parser accepts heterogeneous lists (rejected only at binary encode)"]
 fn mixed_list_rejected() {
     let res: Result<Value, _> = from_string("{TestList:[1f, string2, 3b]}");
     assert!(res.is_err(), "heterogeneous lists must be rejected");
+    assert!(matches!(res, Err(nbtx::Error::HeterogeneousList { .. })));
+}
+
+/// Only the *outer* element type has to agree. A list of lists is homogeneous
+/// as long as every element is a list, however differently the inner ones are
+/// typed — and an inner `[]` is the untyped empty list.
+#[test]
+fn a_list_of_differently_typed_inner_lists_is_accepted() {
+    let v: Value = from_string(r#"{l:[[1b],["x"],[]]}"#).unwrap();
+    assert_eq!(
+        get(&v, "l"),
+        &Value::List(ValueList::List(vec![
+            ValueList::Byte(vec![1]),
+            ValueList::String(vec![bstr::BString::from("x")]),
+            ValueList::End,
+        ]))
+    );
 }
 
 /// KNOWN DIVERGENCE: nbtx follows vanilla Java SNBT and parses bare

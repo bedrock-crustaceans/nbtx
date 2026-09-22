@@ -15,8 +15,8 @@
 use bstr::BString;
 use facet::Facet;
 use nbtx::{
-    Compound, Value, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes, to_le_bytes,
-    to_varint_bytes,
+    Compound, Value, ValueList, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes,
+    to_le_bytes, to_varint_bytes,
 };
 use std::collections::{BTreeMap, HashMap};
 
@@ -327,7 +327,7 @@ fn option_of_a_dynamic_value_roundtrips() {
     for v in [
         None,
         Some(Value::LongArray(vec![1, 2])),
-        Some(Value::List(vec![])),
+        Some(Value::List(ValueList::End)),
     ] {
         let s = S { v: v.clone() };
         let bytes = to_be_bytes(&s).unwrap();
@@ -405,8 +405,9 @@ fn a_vec_of_structs_becomes_a_list_of_compounds() {
     let v = as_value(&inv);
     let list = get(&v, "items").as_list().unwrap();
     assert_eq!(list.len(), 2);
-    assert!(list[0].is_compound());
-    assert_eq!(get(&list[0], "id"), &Value::String(BString::from("stone")));
+    let first = list.get(0).expect("two elements");
+    assert!(first.is_compound());
+    assert_eq!(get(&first, "id"), &Value::String(BString::from("stone")));
 }
 
 /// A fixed-size array of structs uses a different reader (`init_array` plus

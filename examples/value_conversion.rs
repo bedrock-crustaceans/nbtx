@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use bstr::{BStr, BString};
 use facet::Facet;
-use nbtx::Value;
+use nbtx::{Value, ValueList};
 
 #[derive(Facet, Debug, PartialEq)]
 struct Player {
@@ -52,7 +52,7 @@ fn main() -> Result<(), nbtx::Error> {
         stats: [("mined".to_owned(), 1_234_567_890_123_i64)]
             .into_iter()
             .collect(),
-        extra: Value::List(vec![Value::Double(0.5), Value::Double(64.0)]),
+        extra: Value::List(ValueList::Double(vec![0.5, 64.0])),
     };
 
     // --- struct -> Value ---------------------------------------------------
