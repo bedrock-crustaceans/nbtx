@@ -292,14 +292,28 @@ fn hash_len_prefixed<T: Hash, H: Hasher>(items: &[T], state: &mut H) {
     T::hash_slice(items, state);
 }
 
-/// Hashes a compound: entry count, then each key length-first and its value.
-/// See [`hash_bytes`] for why the lengths are there.
+/// Hashes a compound: its entry count, then a digest of its entries that does
+/// not depend on their order.
+///
+/// Under the default `preserve_order` feature a [`Compound`] is an `IndexMap`,
+/// whose `==` ignores insertion order — `{a, b}` equals `{b, a}` — so the hash
+/// must ignore it too, or two equal documents could hash differently and a
+/// `HashMap` keyed by one would miss the other. Each entry (key length-first,
+/// see [`hash_bytes`], then value) is digested on its own with a fresh
+/// [`DefaultHasher`](std::hash::DefaultHasher), and the digests are combined
+/// with wrapping addition, which is commutative. `DefaultHasher::new()` is
+/// deterministic, so the combined digest is stable across runs. The sorted
+/// `BTreeMap` backing gets the same treatment so both features hash alike.
 fn hash_compound<H: Hasher>(map: &Compound, state: &mut H) {
     state.write_usize(map.len());
+    let mut combined = 0_u64;
     for (k, v) in map {
-        hash_bytes(k.as_slice(), state);
-        v.hash(state);
+        let mut entry = std::hash::DefaultHasher::new();
+        hash_bytes(k.as_slice(), &mut entry);
+        v.hash(&mut entry);
+        combined = combined.wrapping_add(entry.finish());
     }
+    state.write_u64(combined);
 }
 
 impl PartialEq<Value> for Value {

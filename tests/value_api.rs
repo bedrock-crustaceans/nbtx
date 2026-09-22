@@ -583,3 +583,58 @@ fn debug_output_names_the_variant_and_its_payload() {
     let raw = format!("{:?}", Value::String(BString::from(vec![0xffu8])));
     assert!(raw.starts_with("String("));
 }
+
+/// A `Compound` compares equal whatever order its entries were inserted in
+/// (the `IndexMap` backing's `==` is order-independent, and so is the
+/// `BTreeMap` one's), so the `Eq`/`Hash` contract demands the two orders hash
+/// alike as well — otherwise a document used as a `HashMap` key could go
+/// missing after a re-encode that shuffles its keys. Checked for a bare
+/// compound, one nested in a `Value::List`, and one nested in another compound.
+#[test]
+fn hash_ignores_compound_key_order_because_equality_does() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn digest(v: &Value) -> u64 {
+        let mut h = DefaultHasher::new();
+        v.hash(&mut h);
+        h.finish()
+    }
+
+    let ab = Compound::from_iter([
+        (BString::from("a"), Value::Int(1)),
+        (BString::from("b"), Value::String("x".into())),
+    ]);
+    let ba = Compound::from_iter([
+        (BString::from("b"), Value::String("x".into())),
+        (BString::from("a"), Value::Int(1)),
+    ]);
+    assert_eq!(Value::Compound(ab.clone()), Value::Compound(ba.clone()));
+    assert_eq!(
+        digest(&Value::Compound(ab.clone())),
+        digest(&Value::Compound(ba.clone()))
+    );
+
+    let in_list_ab = Value::List(ValueList::Compound(vec![ab.clone()]));
+    let in_list_ba = Value::List(ValueList::Compound(vec![ba.clone()]));
+    assert_eq!(in_list_ab, in_list_ba);
+    assert_eq!(digest(&in_list_ab), digest(&in_list_ba));
+
+    let nested_ab = Value::Compound(Compound::from_iter([(
+        BString::from("inner"),
+        Value::Compound(ab),
+    )]));
+    let nested_ba = Value::Compound(Compound::from_iter([(
+        BString::from("inner"),
+        Value::Compound(ba),
+    )]));
+    assert_eq!(nested_ab, nested_ba);
+    assert_eq!(digest(&nested_ab), digest(&nested_ba));
+
+    // Different entries still hash differently in practice.
+    let other = Value::Compound(Compound::from_iter([
+        (BString::from("a"), Value::Int(2)),
+        (BString::from("b"), Value::String("x".into())),
+    ]));
+    assert_ne!(digest(&nested_ab), digest(&other));
+}
