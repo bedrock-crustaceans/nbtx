@@ -17,11 +17,30 @@ use integer_encoding::{VarIntReader, VarIntWriter};
 use crate::error::{InvalidVarint, StringTooLong, UnexpectedEnd};
 use crate::{EndiannessImpl, Error, FieldType, MAX_STRING_LEN, Value, ValueList, Variant};
 
-/// Upper bound on how much capacity we speculatively reserve from an
-/// attacker-controlled wire length before any bytes are actually read. The real
-/// allocation still grows to fit genuine data; this only caps the *initial*
-/// reservation so a bogus multi-gigabyte length can't OOM the process up front.
-const MAX_PREALLOC: usize = 4096;
+/// Upper bound, **in bytes**, on how much capacity a single reservation may
+/// speculatively claim from an attacker-controlled wire length before any bytes
+/// are actually read. See [`prealloc_cap`].
+const MAX_PREALLOC_BYTES: usize = 4096;
+
+/// Caps a wire-supplied element count at [`MAX_PREALLOC_BYTES`] worth of `T`.
+///
+/// The real allocation still grows to fit genuine data; this only bounds the
+/// *initial* reservation, so a bogus multi-gigabyte length cannot commit the
+/// process to a huge allocation before a single payload byte has been read.
+///
+/// The cap is in bytes rather than elements because the reservations nest:
+/// `read_list` recurses before any element is read, so up to `MAX_DEPTH`
+/// frames are live at once, each holding its own `Vec`. A per-element cap would
+/// multiply by `size_of::<T>()` — 4096 `ValueList`s is 128 KiB per level, 64 MiB
+/// over a 511-deep chain, from 2.5 KiB of input. In bytes, the same chain
+/// reserves at most `MAX_DEPTH * MAX_PREALLOC_BYTES` (~2 MiB) in total,
+/// whatever the element type.
+#[inline]
+fn prealloc_cap<T>(len: usize) -> usize {
+    // `size_of::<T>()` is 0 for a ZST; `max(1)` keeps the division defined and
+    // simply leaves such a length uncapped, which costs no memory.
+    len.min(MAX_PREALLOC_BYTES / size_of::<T>().max(1))
+}
 
 /// Maximum number of bytes a 32-bit varint may occupy on the wire.
 ///
@@ -276,12 +295,12 @@ pub(crate) fn read_seq_len<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Res
 
 /// Reads exactly `len` bytes without trusting `len` for the initial allocation.
 ///
-/// `len` comes straight off the wire, so we cap the up-front reservation at
-/// [`MAX_PREALLOC`] and let [`Read::read_to_end`] grow the buffer to fit the
+/// `len` comes straight off the wire, so we cap the up-front reservation with
+/// [`prealloc_cap`] and let [`Read::read_to_end`] grow the buffer to fit the
 /// bytes that are actually present. A truncated stream therefore yields fewer
 /// bytes than promised and surfaces as an [`Error::UnexpectedEof`].
 fn read_exact_bounded<R: ReadBytesExt>(r: &mut R, len: usize) -> Result<Vec<u8>, Error> {
-    let mut buf = Vec::with_capacity(len.min(MAX_PREALLOC));
+    let mut buf = Vec::with_capacity(prealloc_cap::<u8>(len));
     let read = r.take(len as u64).read_to_end(&mut buf)?;
     if read != len {
         return Err(Error::from(std::io::Error::from(
@@ -570,14 +589,14 @@ pub(crate) fn read_list<F: EndiannessImpl, R: ReadBytesExt>(
             ValueList::End
         }
         FieldType::List => {
-            let mut out = Vec::with_capacity(len.min(MAX_PREALLOC));
+            let mut out = Vec::with_capacity(prealloc_cap::<ValueList>(len));
             for _ in 0..len {
                 out.push(read_list::<F, R>(r, depth + 1)?);
             }
             ValueList::List(out)
         }
         FieldType::Compound => {
-            let mut out = Vec::with_capacity(len.min(MAX_PREALLOC));
+            let mut out = Vec::with_capacity(prealloc_cap::<Compound>(len));
             for _ in 0..len {
                 out.push(read_compound::<F, R>(r, depth + 1)?);
             }
@@ -589,7 +608,7 @@ pub(crate) fn read_list<F: EndiannessImpl, R: ReadBytesExt>(
 
 /// Reads the elements of a list whose element type is not itself a container.
 /// Split out of [`read_list`] (and never inlined) so that recursive frame stays
-/// small; every loop caps its up-front reservation at [`MAX_PREALLOC`], since
+/// small; every loop caps its up-front reservation with [`prealloc_cap`], since
 /// `len` came straight off the wire.
 #[inline(never)]
 fn read_leaf_list<F: EndiannessImpl, R: ReadBytesExt>(
@@ -597,11 +616,12 @@ fn read_leaf_list<F: EndiannessImpl, R: ReadBytesExt>(
     elem: FieldType,
     len: usize,
 ) -> Result<ValueList, Error> {
-    /// Reads `len` elements with `$read`, into the `ValueList::$variant` they
-    /// belong to.
+    /// Reads `len` elements of type `$elem` with `$read`, into the
+    /// `ValueList::$variant` they belong to. `$elem` is spelled out so the
+    /// up-front reservation can be capped by its *size*, not by a count.
     macro_rules! collect {
-        ($variant:ident, $read:expr) => {{
-            let mut out = Vec::with_capacity(len.min(MAX_PREALLOC));
+        ($variant:ident, $elem:ty, $read:expr) => {{
+            let mut out: Vec<$elem> = Vec::with_capacity(prealloc_cap::<$elem>(len));
             for _ in 0..len {
                 out.push($read?);
             }
@@ -609,16 +629,20 @@ fn read_leaf_list<F: EndiannessImpl, R: ReadBytesExt>(
         }};
     }
     Ok(match elem {
-        FieldType::Byte => collect!(Byte, read_i8(r)),
-        FieldType::Short => collect!(Short, read_i16::<F, R>(r)),
-        FieldType::Int => collect!(Int, read_i32::<F, R>(r)),
-        FieldType::Long => collect!(Long, read_i64::<F, R>(r)),
-        FieldType::Float => collect!(Float, read_f32::<F, R>(r)),
-        FieldType::Double => collect!(Double, read_f64::<F, R>(r)),
-        FieldType::ByteArray => collect!(ByteArray, read_byte_array::<F, R>(r)),
-        FieldType::String => collect!(String, read_str_payload::<F, R>(r).map(bstr::BString::from)),
-        FieldType::IntArray => collect!(IntArray, read_int_array::<F, R>(r)),
-        FieldType::LongArray => collect!(LongArray, read_long_array::<F, R>(r)),
+        FieldType::Byte => collect!(Byte, i8, read_i8(r)),
+        FieldType::Short => collect!(Short, i16, read_i16::<F, R>(r)),
+        FieldType::Int => collect!(Int, i32, read_i32::<F, R>(r)),
+        FieldType::Long => collect!(Long, i64, read_i64::<F, R>(r)),
+        FieldType::Float => collect!(Float, f32, read_f32::<F, R>(r)),
+        FieldType::Double => collect!(Double, f64, read_f64::<F, R>(r)),
+        FieldType::ByteArray => collect!(ByteArray, Vec<u8>, read_byte_array::<F, R>(r)),
+        FieldType::String => collect!(
+            String,
+            bstr::BString,
+            read_str_payload::<F, R>(r).map(bstr::BString::from)
+        ),
+        FieldType::IntArray => collect!(IntArray, Vec<i32>, read_int_array::<F, R>(r)),
+        FieldType::LongArray => collect!(LongArray, Vec<i64>, read_long_array::<F, R>(r)),
         // Unreachable: `read_list` handles `End` and the two recursive tags.
         FieldType::End | FieldType::List | FieldType::Compound => {
             return Err(Error::Other(String::from(
@@ -637,7 +661,7 @@ fn read_byte_array<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Result<Vec<
 /// Reads an `IntArray` payload (length prefix + that many ints).
 fn read_int_array<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Result<Vec<i32>, Error> {
     let len = read_seq_len::<F, R>(r)? as usize;
-    let mut out = Vec::with_capacity(len.min(MAX_PREALLOC));
+    let mut out = Vec::with_capacity(prealloc_cap::<i32>(len));
     for _ in 0..len {
         out.push(read_i32::<F, R>(r)?);
     }
@@ -647,7 +671,7 @@ fn read_int_array<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Result<Vec<i
 /// Reads a `LongArray` payload (length prefix + that many longs).
 fn read_long_array<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Result<Vec<i64>, Error> {
     let len = read_seq_len::<F, R>(r)? as usize;
-    let mut out = Vec::with_capacity(len.min(MAX_PREALLOC));
+    let mut out = Vec::with_capacity(prealloc_cap::<i64>(len));
     for _ in 0..len {
         out.push(read_i64::<F, R>(r)?);
     }

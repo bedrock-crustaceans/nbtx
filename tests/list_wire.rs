@@ -330,8 +330,9 @@ fn empty_tag_end_list_decodes_to_end() {
 // `333-342`) — a real crash, not a graceful failure. pmmp instead treats a
 // negative `readInt()` length as silently empty (`$size > 0` is false). nbtx
 // must do neither: negative and huge lengths are refused with `Err`, never a
-// panic and never an unbounded allocation (`MAX_PREALLOC` caps the read-ahead
-// buffer regardless of the claimed length).
+// panic and never an unbounded allocation (the decoder's byte-budgeted
+// preallocation cap bounds the read-ahead buffer regardless of the claimed
+// length).
 // ===========================================================================
 
 #[test]
@@ -361,8 +362,8 @@ fn negative_length_list_of_end_is_rejected_not_panicking() {
 
 /// A huge positive length (`i32::MAX`) with a truncated body must fail
 /// promptly rather than committing to an `i32::MAX`-sized allocation up front —
-/// the same `MAX_PREALLOC` discipline `tests/security_limits.rs` pins for
-/// strings and arrays, exercised here for a list.
+/// the same byte-budgeted preallocation discipline `tests/security_limits.rs`
+/// pins for strings and arrays, exercised here for a list.
 #[test]
 fn huge_positive_length_with_truncated_body_errs_quickly() {
     let be = hex("09 00 00 03 7f ff ff ff"); // elem=Int, len=i32::MAX, no payload follows

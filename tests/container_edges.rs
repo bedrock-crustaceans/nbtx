@@ -339,9 +339,10 @@ fn the_first_wins_rule_applies_inside_nested_compounds() {
 
 // --- size ------------------------------------------------------------------
 
-/// Containers wide enough to leave the small-input paths: past `MAX_PREALLOC`
-/// (4 KiB) the readers stop reserving up front and grow the buffer instead, so
-/// this covers the branch that short documents never reach.
+/// Containers wide enough to leave the small-input paths: past the decoder's
+/// 4 KiB preallocation budget the readers stop reserving the full length up
+/// front and grow the buffer instead, so this covers the branch that short
+/// documents never reach.
 #[test]
 fn containers_larger_than_the_preallocation_cap_roundtrip() {
     let doc = comp(&[

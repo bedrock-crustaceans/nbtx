@@ -397,6 +397,77 @@ fn depth_limit_boundary_is_exactly_max_depth() {
     );
 }
 
+// --- speculative preallocation -------------------------------------------
+
+/// A chain of nested `TAG_List`s, each declaring `i32::MAX` elements, in the
+/// smallest possible input: 5 bytes per level (element-type byte + length
+/// prefix) under a root `TAG_List` with an empty name, closed by an empty
+/// `TAG_End` list.
+///
+/// `levels` list headers, so the innermost sits `levels - 1` containers deep —
+/// inside `MAX_DEPTH` at 511, which is the point: the document is rejected for
+/// running out of *bytes*, and every one of the live frames has already made
+/// its up-front reservation by then. `tail` is whatever follows the last
+/// header.
+fn nested_huge_lists(levels: usize, tail: &[u8]) -> Vec<u8> {
+    let mut buf = vec![9u8]; // root TAG_List
+    be::str_payload(&mut buf, b""); // empty name
+    for _ in 0..levels {
+        buf.push(9); // element type = TAG_List
+        buf.extend_from_slice(&i32::MAX.to_be_bytes());
+    }
+    buf.extend_from_slice(tail);
+    buf
+}
+
+/// 2.5 KB of input must not let the decoder reserve gigabytes.
+///
+/// Each of the up-to-`MAX_DEPTH` live `read_list` frames reserves capacity for
+/// its declared length *before* any element is read, so a per-element cap would
+/// be multiplied by the nesting depth (4096 × `size_of::<ValueList>()` × 511 ≈
+/// 64 MiB from this input). The cap is in bytes instead, which bounds the whole
+/// chain at `MAX_DEPTH × 4 KiB`.
+///
+/// The observable contract this test can pin portably is the one that must hold
+/// either way: the document is refused, with an error, and without a panic or
+/// an allocation failure.
+#[test]
+fn deeply_nested_huge_list_lengths_are_refused_without_panicking() {
+    // 511 headers, then an empty `TAG_End` list: 2563 bytes in total.
+    let bytes = nested_huge_lists(511, &[0, 0, 0, 0, 0]);
+    assert_eq!(bytes.len(), 2563, "the attack document stays tiny");
+
+    let err = from_be_bytes::<Value>(&mut bytes.as_slice())
+        .expect_err("511 nested lists each promising i32::MAX elements must be refused");
+    assert!(
+        matches!(
+            err,
+            nbtx::Error::UnexpectedEof(_) | nbtx::Error::MaxDepthExceeded(_)
+        ),
+        "expected UnexpectedEof or MaxDepthExceeded, got {err:?}"
+    );
+}
+
+/// The same chain ending in a list of `Compound`s — the larger element type, and
+/// so the worse case for a count-based cap.
+#[test]
+fn deeply_nested_huge_list_of_compounds_is_refused_without_panicking() {
+    // 510 list headers, then one promising `i32::MAX` compounds that never come.
+    let mut bytes = nested_huge_lists(510, &[]);
+    bytes.push(10); // element type = TAG_Compound
+    bytes.extend_from_slice(&i32::MAX.to_be_bytes());
+
+    let err = from_be_bytes::<Value>(&mut bytes.as_slice())
+        .expect_err("a nested list-of-compound chain promising i32::MAX elements must be refused");
+    assert!(
+        matches!(
+            err,
+            nbtx::Error::UnexpectedEof(_) | nbtx::Error::MaxDepthExceeded(_)
+        ),
+        "expected UnexpectedEof or MaxDepthExceeded, got {err:?}"
+    );
+}
+
 /// The guard must apply to the **encoder** too, otherwise building a deep
 /// `Value` in memory and serialising it would still overflow the stack.
 #[test]
