@@ -41,7 +41,7 @@ pub use error::{Error, Result};
 
 pub use crate::field_type::FieldType;
 pub use crate::named::Named;
-pub use crate::value::{Compound, Value};
+pub use crate::value::{Compound, Value, ValueList, ValueListIntoIter};
 pub use crate::variant::{EndiannessImpl, Variant, VarintEndian};
 
 /// Maximum number of nested containers (`List`/`Compound`) the codecs will

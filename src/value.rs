@@ -3,6 +3,9 @@ use std::hash::{Hash, Hasher};
 use bstr::BString;
 use facet::Facet;
 
+use crate::reflect::value_tag;
+use crate::{Error, FieldType};
+
 /// The map type backing [`Value::Compound`].
 ///
 /// An order-preserving [`indexmap::IndexMap`] with the default `preserve_order`
@@ -209,6 +212,37 @@ fn float_eq<T: Copy + PartialEq + Into<f64>>(lhs: T, rhs: T) -> bool {
     l == r || (l.is_nan() && r.is_nan())
 }
 
+/// Hashes an `f32` the way [`float_eq`] compares it.
+///
+/// `f32` is not `Hash`, so its bytes are hashed — but only after collapsing the
+/// two cases where *equal* floats have different bit patterns, or a value used
+/// as a map key would go missing: `-0.0 == 0.0`, and every `NaN` equals every
+/// other `NaN` whatever payload it carries.
+#[inline]
+fn hash_f32<H: Hasher>(v: f32, state: &mut H) {
+    let normalized = if v.is_nan() {
+        f32::NAN
+    } else if v == 0_f32 {
+        0_f32
+    } else {
+        v
+    };
+    state.write(&normalized.to_le_bytes());
+}
+
+/// Hashes an `f64` the way [`float_eq`] compares it. See [`hash_f32`].
+#[inline]
+fn hash_f64<H: Hasher>(v: f64, state: &mut H) {
+    let normalized = if v.is_nan() {
+        f64::NAN
+    } else if v == 0_f64 {
+        0_f64
+    } else {
+        v
+    };
+    state.write(&normalized.to_le_bytes());
+}
+
 impl PartialEq<Value> for Value {
     #[inline]
     fn eq(&self, rhs: &Value) -> bool {
@@ -396,27 +430,8 @@ impl Hash for Value {
             // patterns, or a `Value` used as a map key would go missing:
             // `-0.0 == 0.0`, and every `NaN` equals every other `NaN` under
             // `float_eq`, whatever payload it carries.
-            Value::Float(v) => {
-                let normalized = if v.is_nan() {
-                    f32::NAN
-                } else if *v == 0_f32 {
-                    0_f32
-                } else {
-                    *v
-                };
-                state.write(&normalized.to_le_bytes());
-            }
-            Value::Double(v) => {
-                // See `Value::Float` above.
-                let normalized = if v.is_nan() {
-                    f64::NAN
-                } else if *v == 0_f64 {
-                    0_f64
-                } else {
-                    *v
-                };
-                state.write(&normalized.to_le_bytes());
-            }
+            Value::Float(v) => hash_f32(*v, state),
+            Value::Double(v) => hash_f64(*v, state),
             Value::Compound(map) => {
                 for (k, v) in map {
                     state.write(k.as_slice());
@@ -428,5 +443,516 @@ impl Hash for Value {
             Value::IntArray(v) => i32::hash_slice(v, state),
             Value::LongArray(v) => i64::hash_slice(v, state),
         }
+    }
+}
+
+/// The typed payload of a [`Value::List`]: one variant per NBT element type.
+///
+/// A `TAG_List` on the wire is a *single* element-type byte followed by N
+/// payloads of that one type. A `Vec<Value>` cannot express that faithfully: it
+/// admits mixtures which have no encoding at all, and it forgets the element
+/// type the moment the list is empty (so an empty `List<Byte>` would come back
+/// out as a `List<End>`). Both problems disappear when the payload is a typed
+/// enum — a `ValueList` is homogeneous by construction, and an empty one still
+/// remembers what it would have held.
+///
+/// # `End` is not the same as "empty"
+///
+/// [`ValueList::End`] is the list whose element-type byte is `TAG_End`. That is
+/// the *only* legal use of `TAG_End` as an element type, and only at length 0
+/// (a non-empty `End` list is a decode error, as it is in pmmp/NBT and
+/// gophertunnel). It is deliberately **not** equal to
+/// `ValueList::Int(Vec::new())`: those two write different bytes — element type
+/// 0 versus 3 — so treating them as one value would make the round-trip lossy.
+/// SNBT cannot tell them apart (`[]` is all the syntax there is), which is why
+/// `[]` always parses back as `End`.
+///
+/// # Equality
+///
+/// `Eq + Hash`, with the same *total* float equality as [`Value`]: every `NaN`
+/// equals every other `NaN`, `-0.0 == 0.0`, and [`Hash`] normalises both so
+/// equal lists always hash alike.
+#[derive(Debug, Clone, Facet)]
+#[repr(u8)]
+pub enum ValueList {
+    /// The empty list, with element type `TAG_End` (tag byte 0, length 0).
+    ///
+    /// Also what an unconstrained empty list is: [`ValueList::default`] and
+    /// `ValueList::try_from(Vec::new())` both land here, and [`Self::push`]
+    /// turns it into a typed list on first use.
+    End,
+    /// A list of `Byte` tags.
+    Byte(Vec<i8>),
+    /// A list of `Short` tags.
+    Short(Vec<i16>),
+    /// A list of `Int` tags.
+    Int(Vec<i32>),
+    /// A list of `Long` tags.
+    Long(Vec<i64>),
+    /// A list of `Float` tags.
+    Float(Vec<f32>),
+    /// A list of `Double` tags.
+    Double(Vec<f64>),
+    /// A list of `ByteArray` tags.
+    ByteArray(Vec<Vec<u8>>),
+    /// A list of `String` tags.
+    ///
+    /// [`bstr::BString`], never [`String`]: NBT strings are raw bytes and are
+    /// not guaranteed to be valid UTF-8, exactly as in [`Value::String`].
+    String(Vec<BString>),
+    /// A list of `List` tags.
+    ///
+    /// The *inner* lists need not agree with each other: `[[1b],["x"],[]]` is a
+    /// list of three lists whose element types are `Byte`, `String` and `End`.
+    /// Only the outer element type — `List` — is shared.
+    List(Vec<ValueList>),
+    /// A list of `Compound` tags.
+    Compound(Vec<Compound>),
+    /// A list of `IntArray` tags.
+    IntArray(Vec<Vec<i32>>),
+    /// A list of `LongArray` tags.
+    LongArray(Vec<Vec<i64>>),
+}
+
+impl ValueList {
+    /// The NBT tag every element of this list carries — the element-type byte
+    /// the binary encoding writes.
+    ///
+    /// [`FieldType::End`] for [`ValueList::End`], which is the empty list that
+    /// names no element type.
+    #[inline]
+    #[must_use]
+    pub fn element_type(&self) -> FieldType {
+        match self {
+            Self::End => FieldType::End,
+            Self::Byte(_) => FieldType::Byte,
+            Self::Short(_) => FieldType::Short,
+            Self::Int(_) => FieldType::Int,
+            Self::Long(_) => FieldType::Long,
+            Self::Float(_) => FieldType::Float,
+            Self::Double(_) => FieldType::Double,
+            Self::ByteArray(_) => FieldType::ByteArray,
+            Self::String(_) => FieldType::String,
+            Self::List(_) => FieldType::List,
+            Self::Compound(_) => FieldType::Compound,
+            Self::IntArray(_) => FieldType::IntArray,
+            Self::LongArray(_) => FieldType::LongArray,
+        }
+    }
+
+    /// The number of elements in the list.
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::End => 0,
+            Self::Byte(v) => v.len(),
+            Self::Short(v) => v.len(),
+            Self::Int(v) => v.len(),
+            Self::Long(v) => v.len(),
+            Self::Float(v) => v.len(),
+            Self::Double(v) => v.len(),
+            Self::ByteArray(v) => v.len(),
+            Self::String(v) => v.len(),
+            Self::List(v) => v.len(),
+            Self::Compound(v) => v.len(),
+            Self::IntArray(v) => v.len(),
+            Self::LongArray(v) => v.len(),
+        }
+    }
+
+    /// Whether the list has no elements.
+    ///
+    /// True for [`ValueList::End`] and for every typed list of length 0; use
+    /// [`Self::element_type`] to tell those apart.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether this is the untyped empty list, [`ValueList::End`].
+    #[inline]
+    #[must_use]
+    pub fn is_end(&self) -> bool {
+        matches!(self, Self::End)
+    }
+
+    /// The empty list that `value`'s tag would build, for [`Self::push`] to
+    /// fill. Never [`Self::End`]: a [`Value`] always carries a real tag.
+    fn empty_for(value: &Value) -> Self {
+        match value {
+            Value::Byte(_) => Self::Byte(Vec::new()),
+            Value::Short(_) => Self::Short(Vec::new()),
+            Value::Int(_) => Self::Int(Vec::new()),
+            Value::Long(_) => Self::Long(Vec::new()),
+            Value::Float(_) => Self::Float(Vec::new()),
+            Value::Double(_) => Self::Double(Vec::new()),
+            Value::ByteArray(_) => Self::ByteArray(Vec::new()),
+            Value::String(_) => Self::String(Vec::new()),
+            Value::List(_) => Self::List(Vec::new()),
+            Value::Compound(_) => Self::Compound(Vec::new()),
+            Value::IntArray(_) => Self::IntArray(Vec::new()),
+            Value::LongArray(_) => Self::LongArray(Vec::new()),
+        }
+    }
+
+    /// Appends `value`, or reports [`Error::HeterogeneousList`] if its tag is
+    /// not this list's element type.
+    ///
+    /// An [`End`](ValueList::End) list has no element type yet, so it *adopts*
+    /// the first pushed element's — the same rule pmmp/NBT's `ListTag::push`
+    /// applies. Once adopted the type is fixed: the list can only be widened
+    /// again by replacing it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HeterogeneousList`], naming this list's element type as
+    /// `expected` and `value`'s tag as `found`.
+    pub fn push(&mut self, value: Value) -> Result<(), Error> {
+        if self.is_end() {
+            *self = Self::empty_for(&value);
+        }
+        match (&mut *self, value) {
+            (Self::Byte(items), Value::Byte(v)) => items.push(v),
+            (Self::Short(items), Value::Short(v)) => items.push(v),
+            (Self::Int(items), Value::Int(v)) => items.push(v),
+            (Self::Long(items), Value::Long(v)) => items.push(v),
+            (Self::Float(items), Value::Float(v)) => items.push(v),
+            (Self::Double(items), Value::Double(v)) => items.push(v),
+            (Self::ByteArray(items), Value::ByteArray(v)) => items.push(v),
+            (Self::String(items), Value::String(v)) => items.push(v),
+            // While `Value::List` still holds a `Vec<Value>`, a nested list has
+            // to be typed on the way in; the next commit makes this a move.
+            (Self::List(items), Value::List(v)) => items.push(ValueList::try_from(v)?),
+            (Self::Compound(items), Value::Compound(v)) => items.push(v),
+            (Self::IntArray(items), Value::IntArray(v)) => items.push(v),
+            (Self::LongArray(items), Value::LongArray(v)) => items.push(v),
+            (this, other) => {
+                return Err(Error::HeterogeneousList {
+                    expected: this.element_type(),
+                    found: value_tag(&other),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// The element at `index`, **cloned** into a [`Value`], or `None` if the
+    /// index is out of bounds.
+    ///
+    /// The elements are stored unboxed (a `Vec<i8>`, not a `Vec<Value>`), so
+    /// there is no `Value` to borrow and one has to be built; for a `Compound`
+    /// or a nested `List` element that is a deep copy. Match on the variant
+    /// directly to read an element without copying it.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<Value> {
+        Some(match self {
+            Self::End => return None,
+            Self::Byte(v) => Value::Byte(*v.get(index)?),
+            Self::Short(v) => Value::Short(*v.get(index)?),
+            Self::Int(v) => Value::Int(*v.get(index)?),
+            Self::Long(v) => Value::Long(*v.get(index)?),
+            Self::Float(v) => Value::Float(*v.get(index)?),
+            Self::Double(v) => Value::Double(*v.get(index)?),
+            Self::ByteArray(v) => Value::ByteArray(v.get(index)?.clone()),
+            Self::String(v) => Value::String(v.get(index)?.clone()),
+            Self::List(v) => Value::from(v.get(index)?.clone()),
+            Self::Compound(v) => Value::Compound(v.get(index)?.clone()),
+            Self::IntArray(v) => Value::IntArray(v.get(index)?.clone()),
+            Self::LongArray(v) => Value::LongArray(v.get(index)?.clone()),
+        })
+    }
+
+    /// Iterates the elements as owned [`Value`]s.
+    ///
+    /// Every item is **cloned** out of the typed storage; see [`Self::get`].
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Value> + '_ {
+        // `index < self.len()` on every step, and each variant's storage has
+        // exactly that many elements, so `get` never answers `None` here.
+        (0..self.len()).map(move |i| self.get(i).unwrap_or(Value::Byte(0)))
+    }
+
+    /// Collects the elements into a `Vec<Value>`, cloning each. See
+    /// [`Self::get`].
+    #[must_use]
+    pub fn to_values(&self) -> Vec<Value> {
+        self.iter().collect()
+    }
+
+    /// Consumes the list into a `Vec<Value>`, boxing each element into its tag.
+    ///
+    /// The inverse of [`TryFrom<Vec<Value>>`](ValueList::try_from), and lossy in
+    /// exactly one way: the element type of an *empty* list is not recoverable
+    /// from the empty `Vec` it produces.
+    #[must_use]
+    pub fn into_values(self) -> Vec<Value> {
+        self.into_iter().collect()
+    }
+}
+
+impl ValueList {
+    impl_access_fns!(
+        Byte = Vec<i8>,
+        Short = Vec<i16>,
+        Int = Vec<i32>,
+        Long = Vec<i64>,
+        Float = Vec<f32>,
+        Double = Vec<f64>,
+        String = Vec<BString>,
+        List = Vec<Self>,
+        Compound = Vec<Compound>,
+        ByteArray = Vec<Vec<u8>>,
+        IntArray = Vec<Vec<i32>>,
+        LongArray = Vec<Vec<i64>>
+    );
+}
+
+/// The untyped empty list — the list an empty `Vec<Value>` converts to, and the
+/// one [`ValueList::push`] gives a type to.
+impl Default for ValueList {
+    #[inline]
+    fn default() -> Self {
+        Self::End
+    }
+}
+
+impl TryFrom<Vec<Value>> for ValueList {
+    type Error = Error;
+
+    /// Collects a `Vec<Value>` into the typed list its elements describe.
+    ///
+    /// This is the ergonomic way to build a `ValueList` from dynamic values,
+    /// and the point at which a mixture is caught: NBT has no encoding for one.
+    /// An empty `Vec` becomes [`ValueList::End`], the empty list that names no
+    /// element type.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HeterogeneousList`] if the elements do not all share the first
+    /// one's tag; `expected` is that first tag and `found` the first that
+    /// differed.
+    fn try_from(values: Vec<Value>) -> Result<Self, Error> {
+        let mut out = ValueList::End;
+        for value in values {
+            out.push(value)?;
+        }
+        Ok(out)
+    }
+}
+
+/// Iterates a [`ValueList`] by value, re-boxing each element into a [`Value`].
+///
+/// A real enum rather than a boxed trait object: the element storage is a
+/// different `Vec<T>` per variant, so the iterator has to be a sum of those
+/// thirteen cases, and writing it out keeps the iteration free of an indirect
+/// call and of an allocation.
+#[derive(Debug, Clone)]
+pub enum ValueListIntoIter {
+    /// The empty list: yields nothing.
+    End,
+    /// `Byte` elements.
+    Byte(std::vec::IntoIter<i8>),
+    /// `Short` elements.
+    Short(std::vec::IntoIter<i16>),
+    /// `Int` elements.
+    Int(std::vec::IntoIter<i32>),
+    /// `Long` elements.
+    Long(std::vec::IntoIter<i64>),
+    /// `Float` elements.
+    Float(std::vec::IntoIter<f32>),
+    /// `Double` elements.
+    Double(std::vec::IntoIter<f64>),
+    /// `ByteArray` elements.
+    ByteArray(std::vec::IntoIter<Vec<u8>>),
+    /// `String` elements.
+    String(std::vec::IntoIter<BString>),
+    /// `List` elements.
+    List(std::vec::IntoIter<ValueList>),
+    /// `Compound` elements.
+    Compound(std::vec::IntoIter<Compound>),
+    /// `IntArray` elements.
+    IntArray(std::vec::IntoIter<Vec<i32>>),
+    /// `LongArray` elements.
+    LongArray(std::vec::IntoIter<Vec<i64>>),
+}
+
+impl Iterator for ValueListIntoIter {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Value> {
+        match self {
+            Self::End => None,
+            Self::Byte(it) => it.next().map(Value::Byte),
+            Self::Short(it) => it.next().map(Value::Short),
+            Self::Int(it) => it.next().map(Value::Int),
+            Self::Long(it) => it.next().map(Value::Long),
+            Self::Float(it) => it.next().map(Value::Float),
+            Self::Double(it) => it.next().map(Value::Double),
+            Self::ByteArray(it) => it.next().map(Value::ByteArray),
+            Self::String(it) => it.next().map(Value::String),
+            Self::List(it) => it.next().map(Value::from),
+            Self::Compound(it) => it.next().map(Value::Compound),
+            Self::IntArray(it) => it.next().map(Value::IntArray),
+            Self::LongArray(it) => it.next().map(Value::LongArray),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::End => (0, Some(0)),
+            Self::Byte(it) => it.size_hint(),
+            Self::Short(it) => it.size_hint(),
+            Self::Int(it) => it.size_hint(),
+            Self::Long(it) => it.size_hint(),
+            Self::Float(it) => it.size_hint(),
+            Self::Double(it) => it.size_hint(),
+            Self::ByteArray(it) => it.size_hint(),
+            Self::String(it) => it.size_hint(),
+            Self::List(it) => it.size_hint(),
+            Self::Compound(it) => it.size_hint(),
+            Self::IntArray(it) => it.size_hint(),
+            Self::LongArray(it) => it.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for ValueListIntoIter {}
+
+impl IntoIterator for ValueList {
+    type Item = Value;
+    type IntoIter = ValueListIntoIter;
+
+    fn into_iter(self) -> ValueListIntoIter {
+        match self {
+            Self::End => ValueListIntoIter::End,
+            Self::Byte(v) => ValueListIntoIter::Byte(v.into_iter()),
+            Self::Short(v) => ValueListIntoIter::Short(v.into_iter()),
+            Self::Int(v) => ValueListIntoIter::Int(v.into_iter()),
+            Self::Long(v) => ValueListIntoIter::Long(v.into_iter()),
+            Self::Float(v) => ValueListIntoIter::Float(v.into_iter()),
+            Self::Double(v) => ValueListIntoIter::Double(v.into_iter()),
+            Self::ByteArray(v) => ValueListIntoIter::ByteArray(v.into_iter()),
+            Self::String(v) => ValueListIntoIter::String(v.into_iter()),
+            Self::List(v) => ValueListIntoIter::List(v.into_iter()),
+            Self::Compound(v) => ValueListIntoIter::Compound(v.into_iter()),
+            Self::IntArray(v) => ValueListIntoIter::IntArray(v.into_iter()),
+            Self::LongArray(v) => ValueListIntoIter::LongArray(v.into_iter()),
+        }
+    }
+}
+
+macro_rules! impl_list_from {
+    ($($ty: ty => $variant: ident),+) => {
+        $(
+            impl From<Vec<$ty>> for ValueList {
+                #[inline]
+                fn from(value: Vec<$ty>) -> ValueList {
+                    ValueList::$variant(value)
+                }
+            }
+        )+
+    }
+}
+
+// One per element type that has an unambiguous Rust spelling. `Vec<Vec<u8>>`,
+// `Vec<Vec<i32>>` and `Vec<Vec<i64>>` are deliberately absent: a `Vec<Vec<u8>>`
+// is just as plausibly a list of `ByteArray`s as a list of `List`s of `Byte`,
+// and guessing wrong would silently change the tag on the wire. Name those
+// variants directly.
+impl_list_from!(
+    i8 => Byte,
+    i16 => Short,
+    i32 => Int,
+    i64 => Long,
+    f32 => Float,
+    f64 => Double,
+    BString => String,
+    Compound => Compound,
+    ValueList => List
+);
+
+/// Total equality, element by element, with [`Value`]'s float rules (see
+/// [`float_eq`]).
+///
+/// Two lists of *different* element types are never equal, and that includes
+/// [`ValueList::End`] versus any empty typed list: they encode to different
+/// bytes, so calling them equal would hide a real difference.
+impl PartialEq<ValueList> for ValueList {
+    fn eq(&self, rhs: &ValueList) -> bool {
+        match (self, rhs) {
+            (Self::End, Self::End) => true,
+            (Self::Byte(lhs), Self::Byte(rhs)) => lhs == rhs,
+            (Self::Short(lhs), Self::Short(rhs)) => lhs == rhs,
+            (Self::Int(lhs), Self::Int(rhs)) => lhs == rhs,
+            (Self::Long(lhs), Self::Long(rhs)) => lhs == rhs,
+            // The two float arms are why this impl is written out rather than
+            // derived: `f32`/`f64` have no reflexive `==`, so `Vec`'s own
+            // equality would make a list holding a `NaN` unequal to itself and
+            // `Eq` unsound.
+            (Self::Float(lhs), Self::Float(rhs)) => {
+                lhs.len() == rhs.len() && std::iter::zip(lhs, rhs).all(|(l, r)| float_eq(*l, *r))
+            }
+            (Self::Double(lhs), Self::Double(rhs)) => {
+                lhs.len() == rhs.len() && std::iter::zip(lhs, rhs).all(|(l, r)| float_eq(*l, *r))
+            }
+            (Self::ByteArray(lhs), Self::ByteArray(rhs)) => lhs == rhs,
+            (Self::String(lhs), Self::String(rhs)) => lhs == rhs,
+            (Self::List(lhs), Self::List(rhs)) => lhs == rhs,
+            (Self::Compound(lhs), Self::Compound(rhs)) => lhs == rhs,
+            (Self::IntArray(lhs), Self::IntArray(rhs)) => lhs == rhs,
+            (Self::LongArray(lhs), Self::LongArray(rhs)) => lhs == rhs,
+            _ => false,
+        }
+    }
+}
+
+/// `ValueList`'s equality is total, exactly as [`Value`]'s is, so it is `Eq`
+/// too and a list can key a `HashMap`/`HashSet`.
+impl Eq for ValueList {}
+
+impl Hash for ValueList {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        // The element type leads, so that two *empty* lists of different types
+        // — and in particular `End` and `Int([])`, which `PartialEq` keeps
+        // apart — do not all collapse onto the same hash.
+        state.write_u8(self.element_type() as u8);
+        match self {
+            Self::End => {}
+            Self::Byte(v) => i8::hash_slice(v, state),
+            Self::Short(v) => i16::hash_slice(v, state),
+            Self::Int(v) => i32::hash_slice(v, state),
+            Self::Long(v) => i64::hash_slice(v, state),
+            // Normalised, so that lists which `float_eq` calls equal hash alike.
+            Self::Float(v) => v.iter().for_each(|f| hash_f32(*f, state)),
+            Self::Double(v) => v.iter().for_each(|f| hash_f64(*f, state)),
+            Self::ByteArray(v) => v.iter().for_each(|b| state.write(b)),
+            Self::String(v) => v.iter().for_each(|s| state.write(s.as_slice())),
+            Self::List(v) => Self::hash_slice(v, state),
+            Self::Compound(v) => {
+                for map in v {
+                    for (k, value) in map {
+                        state.write(k.as_slice());
+                        value.hash(state);
+                    }
+                }
+            }
+            Self::IntArray(v) => v.iter().for_each(|a| i32::hash_slice(a, state)),
+            Self::LongArray(v) => v.iter().for_each(|a| i64::hash_slice(a, state)),
+        }
+    }
+}
+
+/// Wraps a typed list into a [`Value::List`].
+///
+/// While `Value::List` still holds a `Vec<Value>`, this re-boxes each element;
+/// the next commit makes it the identity it is meant to be.
+impl From<ValueList> for Value {
+    #[inline]
+    fn from(value: ValueList) -> Value {
+        Value::List(value.into_values())
     }
 }
