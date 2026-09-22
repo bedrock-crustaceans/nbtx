@@ -330,7 +330,10 @@ pub(crate) fn read_tag<R: ReadBytesExt>(r: &mut R) -> Result<FieldType, Error> {
 }
 
 /// Builds the "a `TAG_End` turned up where a value was due" error.
-fn unexpected_end() -> Error {
+///
+/// `pub(crate)` because `nbt::de` raises the same error for the same input — a
+/// non-empty list of `TAG_End` — on the derived-target path.
+pub(crate) fn unexpected_end() -> Error {
     Error::UnexpectedEnd(UnexpectedEnd {
         #[cfg(feature = "error-context")]
         at: String::from("unknown"),

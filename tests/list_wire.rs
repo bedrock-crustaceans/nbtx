@@ -312,6 +312,51 @@ fn non_empty_tag_end_list_is_rejected_as_unexpected_end_in_every_variant() {
     }
 }
 
+/// ...and the same error whatever the *target* type is.
+///
+/// The check lives in the header reader, before the element tag is handed to
+/// whatever is being decoded into, so a derived target cannot report the
+/// mismatch as its own `UnexpectedType { expected: Byte, actual: End }` while
+/// the `Value` path reports `UnexpectedEnd`. The stream is invalid for a reason
+/// that has nothing to do with the target, and the error now says so.
+#[test]
+fn non_empty_tag_end_list_is_unexpected_end_for_every_target_type() {
+    let be = hex("09 00 00 00 00 00 00 01");
+    let le = hex("09 00 00 00 01 00 00 00");
+    let var = hex("09 00 00 02"); // len zigzag(1) = 02
+
+    macro_rules! check {
+        ($target:ty) => {
+            for (variant, err) in [
+                (
+                    "BigEndian",
+                    from_be_bytes::<$target>(&mut be.as_slice()).unwrap_err(),
+                ),
+                (
+                    "LittleEndian",
+                    from_le_bytes::<$target>(&mut le.as_slice()).unwrap_err(),
+                ),
+                (
+                    "Varint",
+                    from_varint_bytes::<$target>(&mut var.as_slice()).unwrap_err(),
+                ),
+            ] {
+                assert!(
+                    matches!(err, Error::UnexpectedEnd(_)),
+                    "{}/{variant}: expected UnexpectedEnd, got {err:?}",
+                    stringify!($target)
+                );
+            }
+        };
+    }
+
+    check!(Vec<i8>);
+    check!(Vec<String>);
+    check!(Vec<Value>);
+    check!(ValueList);
+    check!(Value);
+}
+
 /// Element byte 0 (`TAG_End`) at length 0 is the *only* legal use of `TAG_End`
 /// as an element type, and decodes to `ValueList::End`.
 #[test]

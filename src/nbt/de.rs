@@ -310,6 +310,9 @@ fn read_scalar<'f, F: EndiannessImpl, R: ReadBytesExt>(
 /// Normalises a sequence tag into `(element tag, length)`; a `List` carries its
 /// own element type, the typed arrays imply theirs. Split out of [`read_seq`] to
 /// keep that recursive frame small.
+///
+/// A non-empty list of `TAG_End` is rejected here as [`Error::UnexpectedEnd`],
+/// whatever the target type — see the comment inside.
 #[inline(never)]
 fn read_seq_header<F: EndiannessImpl, R: ReadBytesExt>(
     tag: FieldType,
@@ -319,6 +322,15 @@ fn read_seq_header<F: EndiannessImpl, R: ReadBytesExt>(
         FieldType::List => {
             let elem_tag = io::read_tag(r)?;
             let len = io::read_seq_len::<F, R>(r)? as usize;
+            // `TAG_End` is a legal element type only for the empty list. A
+            // non-empty one has no payloads to read at all, so it is rejected
+            // here rather than being handed down as an element tag that would
+            // surface as whatever mismatch the *target* type happens to notice
+            // first. `io::read_list` raises the identical error on the
+            // `Value`/`ValueList` path; every target now agrees.
+            if elem_tag == FieldType::End && len != 0 {
+                return Err(io::unexpected_end());
+            }
             (elem_tag, len)
         }
         FieldType::ByteArray => (FieldType::Byte, io::read_seq_len::<F, R>(r)? as usize),
