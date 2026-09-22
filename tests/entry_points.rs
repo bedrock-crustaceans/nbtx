@@ -142,6 +142,56 @@ fn a_failed_in_write_leaves_a_partial_document_behind() {
     );
 }
 
+/// ...but a heterogeneous list must not be *part* of that partial document.
+///
+/// A `TAG_List` header is one element-type byte plus a length: a promise of N
+/// payloads of one tag. The writer checks the whole list before emitting that
+/// header, so a mixture stops the write with nothing of the list committed —
+/// the buffer ends right after the field's tag and name, exactly where a
+/// document that simply omitted the field would have carried on.
+#[test]
+fn a_heterogeneous_list_fails_before_its_header_reaches_the_writer() {
+    // `ValueList` cannot hold a mixture, so the mixture has to be a
+    // `Vec<Value>` field — the one shape whose element tag is not fixed by its
+    // Rust type, and so the only one the writer has to check.
+    #[derive(Facet)]
+    struct Doc {
+        ok: i32,
+        bad: Vec<Value>,
+    }
+
+    let mixed = Doc {
+        ok: 1,
+        bad: vec![Value::Byte(1), Value::Short(2)],
+    };
+    let mut buf = Vec::new();
+    let err = to_be_bytes_in(&mut buf, &mixed).expect_err("a mixed Vec<Value> must be refused");
+    assert!(
+        matches!(
+            err,
+            nbtx::Error::HeterogeneousList {
+                expected: nbtx::FieldType::Byte,
+                found: nbtx::FieldType::Short,
+            }
+        ),
+        "got {err:?}"
+    );
+
+    // Everything up to and including the offending field's tag + name, and not
+    // one byte more: root header, the `ok` entry, then `09 0003 "bad"`.
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&[0x0a, 0x00, 0x00]); // root compound, empty name
+    expected.extend_from_slice(&[0x03, 0x00, 0x02]); // TAG_Int, name length 2
+    expected.extend_from_slice(b"ok");
+    expected.extend_from_slice(&1i32.to_be_bytes());
+    expected.extend_from_slice(&[0x09, 0x00, 0x03]); // TAG_List, name length 3
+    expected.extend_from_slice(b"bad");
+    assert_eq!(
+        buf, expected,
+        "the writer must stop before the list's element-type byte and length"
+    );
+}
+
 /// The generic `to_bytes::<E>` / `from_bytes::<E, T>` take the endianness as a
 /// type parameter, which is what lets a caller be generic over the variant
 /// instead of matching on it. Each marker must agree with its named shortcut.

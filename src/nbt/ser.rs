@@ -227,10 +227,16 @@ fn write_seq<F: EndiannessImpl, W: WriteBytesExt>(
                 Some(first) => tag_of(first)?,
                 None => static_tag.unwrap_or(FieldType::End),
             };
-            w.write_u8(elem_tag as u8)?;
-            io::write_seq_len::<F, W>(w, len)?;
-            for item in list.iter() {
-                if static_tag.is_none() {
+            // The mixture is looked for *before* anything is written. The
+            // element-type byte and the length prefix are a promise of `len`
+            // payloads of one tag; discovering at element k that the promise
+            // cannot be kept would leave it standing in the caller's writer,
+            // which `to_bytes_in` cannot take back (`to_bytes` only gets away
+            // with it because it drops its own buffer). One extra pass over a
+            // list whose tag the shape does not fix is cheap — `tag_of` reads
+            // the discriminant and nothing else.
+            if static_tag.is_none() {
+                for item in list.iter() {
                     let tag = tag_of(item)?;
                     if tag != elem_tag {
                         return Err(Error::HeterogeneousList {
@@ -239,6 +245,10 @@ fn write_seq<F: EndiannessImpl, W: WriteBytesExt>(
                         });
                     }
                 }
+            }
+            w.write_u8(elem_tag as u8)?;
+            io::write_seq_len::<F, W>(w, len)?;
+            for item in list.iter() {
                 write_payload::<F, W>(w, item, depth + 1)?;
             }
         }
