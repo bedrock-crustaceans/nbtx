@@ -13,7 +13,7 @@ A high-performance, pure-Rust implementation of the **Named Binary Tag (NBT)** f
 * **Memory Efficient:** Optimized for low-allocation parsing and high-speed serialization.
 * **Unstructed Data**: Support for NBT data with no predefined structure via `nbtx::Value`, and `nbtx::to_value`/`nbtx::from_value` to convert between it and your own types without re-encoding.
 * **Facet Reflection:** Map between Rust structs and NBT with a single `#[derive(nbtx::Facet)]`.
-* **Strictly Typed:** Safe handling of Compound, List, and Byte Array tags.
+* **Strictly Typed:** Safe handling of Compound, List, and Byte Array tags. A `Value::List` holds a `nbtx::ValueList` with one variant per element type, so a heterogeneous list cannot be built and an empty list keeps the element type it was decoded with.
 
 ## 📦 Installation
 
