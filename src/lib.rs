@@ -41,7 +41,7 @@ pub use error::{Error, Result};
 
 pub use crate::field_type::FieldType;
 pub use crate::named::Named;
-pub use crate::value::{Compound, Value, ValueList, ValueListIntoIter};
+pub use crate::value::{Compound, Value, ValueList, ValueListIntoIter, ValueListIter};
 pub use crate::variant::{EndiannessImpl, Variant, VarintEndian};
 
 /// Maximum number of nested containers (`List`/`Compound`) the codecs will
@@ -207,10 +207,18 @@ facet::define_attr_grammar! {
         ///   loosens, how the discriminant is read at its natural width.
         ///
         /// Anywhere else — a struct-typed field, a `Vec<Struct>`, an
-        /// `Option<Struct>`, a `bool`, a `u8`, a `String`, a [`Value`], a map —
-        /// is an [`Error::InvalidLenientWidth`], raised the first time that
-        /// field is decoded. Widening has no meaning for a compound, so it is
-        /// refused rather than silently ignored.
+        /// `Option<Struct>`, a `bool`, a `u8`, a `String`, a [`Value`], a
+        /// [`ValueList`], a map — is an [`Error::InvalidLenientWidth`], raised
+        /// the first time that field is decoded. Widening has no meaning for a
+        /// compound, so it is refused rather than silently ignored.
+        ///
+        /// That report comes from the **readers only**. The writers never
+        /// consult the attribute at all (see *Decode only* below), so they have
+        /// nothing to validate it against and do not try: a struct carrying a
+        /// misplaced `lenient_width` serialises happily through
+        /// `to_*_bytes`/`to_string`/[`to_value`] and then fails on the way back
+        /// in. If you are checking a schema, decode something with it — an
+        /// encode will not tell you.
         ///
         /// # What conversions are allowed
         ///

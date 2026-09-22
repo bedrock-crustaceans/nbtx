@@ -1,8 +1,9 @@
 //! Edge cases of the two recursive containers, `List` and `Compound`.
 //!
 //! `tag_semantics.rs` establishes the rules (one element type per list,
-//! first-wins duplicate keys, empty-list normalisation). This file works the
-//! *shapes* those rules leave open and that nothing else exercises: lists whose
+//! first-wins duplicate keys, an empty list that still names its element type).
+//! This file works the *shapes* those rules leave open and that nothing else
+//! exercises: lists whose
 //! elements are themselves containers, arrays nested in lists, keys that are
 //! empty or contain NUL, containers wide enough to leave the small-array paths,
 //! and the exact point at which a heterogeneous list is detected.
@@ -111,9 +112,10 @@ fn lists_of_typed_arrays_roundtrip() {
     }
 }
 
-/// A list of empty lists still declares TAG_List as its element type, so the
-/// empty-list normalisation applies to the *inner* lists only and does not
-/// propagate outward.
+/// A list of empty lists still declares TAG_List as its element type: the inner
+/// lists being empty says nothing about the outer one's element type, and an
+/// inner `ValueList::End` is a value in its own right rather than an absence
+/// that could propagate outward.
 #[test]
 fn a_list_of_empty_lists_keeps_its_own_element_type() {
     let doc = comp(&[(

@@ -234,6 +234,57 @@ fn the_end_list_iterates_empty() {
     assert_eq!(ValueList::End.into_values(), Vec::<Value>::new());
 }
 
+/// `for value in &list` works, and agrees with `iter()` and the owning
+/// `into_iter()` on every variant.
+#[test]
+fn a_list_reference_is_iterable() {
+    for list in all_variants() {
+        let by_ref: Vec<Value> = (&list).into_iter().collect();
+        assert_eq!(by_ref, list.to_values(), "{list:?}");
+        assert_eq!(by_ref, list.clone().into_values(), "{list:?}");
+    }
+
+    let mut seen = Vec::new();
+    for value in &ValueList::Int(vec![1, 2, 3]) {
+        seen.push(value);
+    }
+    assert_eq!(seen, vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+}
+
+/// Both iterators are double-ended and fused: `rev()` walks the elements
+/// backwards, and neither yields anything again once exhausted.
+#[test]
+fn both_list_iterators_are_double_ended_and_fused() {
+    let list = ValueList::String(vec![
+        BString::from("a"),
+        BString::from("b"),
+        BString::from("c"),
+    ]);
+    let forwards = list.to_values();
+    let mut backwards = forwards.clone();
+    backwards.reverse();
+
+    assert_eq!(list.iter().rev().collect::<Vec<_>>(), backwards);
+    assert_eq!(
+        list.clone().into_iter().rev().collect::<Vec<_>>(),
+        backwards
+    );
+
+    // Meeting in the middle covers exactly the boundary `next`/`next_back`
+    // share.
+    let mut it = list.iter();
+    assert_eq!(it.next(), Some(Value::String(BString::from("a"))));
+    assert_eq!(it.next_back(), Some(Value::String(BString::from("c"))));
+    assert_eq!(it.len(), 1);
+    assert_eq!(it.next_back(), Some(Value::String(BString::from("b"))));
+    assert_eq!(it.next(), None);
+    assert_eq!(it.next_back(), None, "and stays exhausted");
+
+    let mut owned = ValueList::End.into_iter();
+    assert_eq!(owned.next(), None);
+    assert_eq!(owned.next_back(), None);
+}
+
 /// `into_values` is the inverse of `try_from` for every non-empty list.
 #[test]
 fn into_values_round_trips_through_try_from() {
