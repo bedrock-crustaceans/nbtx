@@ -34,13 +34,9 @@ nbtx reads and writes NBT, the tagged binary format Minecraft uses for worlds, i
 
 ### Features
 
-- **every wire variant** - big-endian (Java, most `.nbt` files), little-endian (Bedrock on disk) and varint (Bedrock over the network), behind one API.
-- **derive-based mapping** - turn plain Rust structs into NBT and back with `#[derive(Facet)]`; no hand-written visitors.
-- **schemaless data** - the dynamic `nbtx::Value` tree for editors, converters and anything whose shape isn't known at compile time, with `to_value`/`from_value` to move between it and your own types without re-encoding.
-- **strictly typed lists** - `Value::List` holds a `ValueList` with one variant per element type, so a heterogeneous list can't be built and an empty list keeps the element type it was decoded with.
-- **lossless round-trips** - compound key order is preserved by default, and NBT strings are kept as raw bytes (`BString`), so files re-encode byte-for-byte even when they contain invalid UTF-8.
-- **SNBT** - parse and print the human-readable text form used in commands and NBT editors.
-- **safe on hostile input** - malformed, truncated or malicious data produces a typed `nbtx::Error`, never a panic. The decoder is fuzzed (see [`fuzz`](fuzz)).
+- **every variant** - big-endian, little-endian and varint NBT, plus SNBT text.
+- **typed or dynamic** - map structs with `#[derive(Facet)]`, or use the schemaless `Value` tree.
+- **lossless and safe** - byte-for-byte round-trips, and bad input returns an error, never a panic.
 
 ### Installation
 
