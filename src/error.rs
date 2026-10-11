@@ -797,6 +797,20 @@ pub enum Error {
     #[cfg(feature = "nbt")]
     #[error(transparent)]
     StringLengthExceeded(StringLengthExceeded),
+    /// The input ran past [`DecodeOptions::max_bytes`](crate::DecodeOptions::max_bytes).
+    #[cfg(feature = "nbt")]
+    #[error("NBT input exceeds the {max}-byte decode limit")]
+    InputSizeExceeded {
+        /// The byte limit that was hit.
+        max: usize,
+    },
+    /// The document held more values than [`DecodeOptions::max_nodes`](crate::DecodeOptions::max_nodes).
+    #[cfg(feature = "nbt")]
+    #[error("NBT document exceeds the {max}-value decode limit")]
+    NodeCountExceeded {
+        /// The value limit that was hit.
+        max: usize,
+    },
     /// A compound key had no matching struct field.
     ///
     /// Raised by every codec (binary, SNBT and [`from_value`](crate::from_value)).
@@ -839,6 +853,13 @@ impl From<std::string::FromUtf8Error> for Error {
 
 impl From<std::io::Error> for Error {
     fn from(value: std::io::Error) -> Error {
+        #[cfg(feature = "nbt")]
+        if let Some(exhausted) = value
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<crate::nbt::source::InputExhausted>())
+        {
+            return Error::InputSizeExceeded { max: exhausted.0 };
+        }
         if value.kind() == std::io::ErrorKind::UnexpectedEof {
             // TODO: How should I retrieve the current field name?
             Error::UnexpectedEof(UnexpectedEof {

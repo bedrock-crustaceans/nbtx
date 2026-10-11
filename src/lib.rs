@@ -54,6 +54,43 @@ pub use crate::variant::{EndiannessImpl, Variant, VarintEndian};
 /// default thread stack even in an unoptimised build.
 pub const MAX_DEPTH: usize = 512;
 
+/// Limits on one binary decode, passed to the `from_*_bytes_with` functions.
+///
+/// The plain `from_*_bytes` functions use [`DecodeOptions::default`]. Input is
+/// untrusted, so every limit is finite by default: `max_bytes` caps how much is
+/// read, `max_nodes` caps how many values are built (each one allocates, which
+/// is how a small input can otherwise cost many times its size in memory), and
+/// `max_depth` caps nesting (see [`MAX_DEPTH`] for the stack this needs).
+#[cfg(feature = "nbt")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodeOptions {
+    /// Bytes read from the input, the root header included.
+    pub max_bytes: usize,
+    /// Values decoded, containers and their elements alike.
+    pub max_nodes: usize,
+    /// Containers nested inside one another.
+    pub max_depth: usize,
+}
+
+#[cfg(feature = "nbt")]
+impl DecodeOptions {
+    /// 64 MiB of input.
+    pub const DEFAULT_MAX_BYTES: usize = 64 << 20;
+    /// About 4 million values.
+    pub const DEFAULT_MAX_NODES: usize = 1 << 22;
+}
+
+#[cfg(feature = "nbt")]
+impl Default for DecodeOptions {
+    fn default() -> Self {
+        Self {
+            max_bytes: Self::DEFAULT_MAX_BYTES,
+            max_nodes: Self::DEFAULT_MAX_NODES,
+            max_depth: MAX_DEPTH,
+        }
+    }
+}
+
 /// Maximum length, in bytes, of any NBT string: a `String`-tag payload, a
 /// compound key, or a root name.
 ///
@@ -264,8 +301,12 @@ facet::define_attr_grammar! {
 /// bound as the binary ones, and the conversion is available with no features at
 /// all — hence no `#[cfg]` here.
 pub(crate) fn max_depth_exceeded() -> Error {
+    max_depth_exceeded_at(MAX_DEPTH)
+}
+
+pub(crate) fn max_depth_exceeded_at(max: usize) -> Error {
     Error::MaxDepthExceeded(crate::error::MaxDepthExceeded {
-        max: MAX_DEPTH,
+        max,
         #[cfg(feature = "error-context")]
         at: String::from("unknown"),
         #[cfg(feature = "error-context")]
@@ -297,8 +338,9 @@ pub use crate::convert::{from_value, to_value};
 
 #[cfg(feature = "nbt")]
 pub use crate::nbt::de::{
-    from_be_bytes, from_be_bytes_or_default, from_bytes, from_bytes_or_default, from_le_bytes,
-    from_le_bytes_or_default, from_varint_bytes, from_varint_bytes_or_default,
+    from_be_bytes, from_be_bytes_or_default, from_be_bytes_with, from_bytes, from_bytes_or_default,
+    from_bytes_with, from_le_bytes, from_le_bytes_or_default, from_le_bytes_with,
+    from_varint_bytes, from_varint_bytes_or_default, from_varint_bytes_with,
 };
 #[cfg(feature = "nbt")]
 pub use crate::nbt::ser::{

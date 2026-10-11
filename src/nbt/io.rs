@@ -16,6 +16,7 @@ use integer_encoding::{VarIntReader, VarIntWriter};
 
 use crate::error::{InvalidVarint, StringLengthExceeded, UnexpectedEnd};
 use crate::nbt::mutf8;
+use crate::nbt::source::Budget;
 use crate::{EndiannessImpl, Error, FieldType, MAX_STRING_LEN, Value, Variant};
 
 /// Upper bound, in bytes, on how much capacity we speculatively reserve from an
@@ -300,16 +301,14 @@ fn read_exact_bounded<R: ReadBytesExt>(r: &mut R, len: usize) -> Result<Vec<u8>,
 }
 
 /// Reads a raw `String`-tag payload (length prefix + raw bytes).
-pub(crate) fn read_str_payload<F: EndiannessImpl, R: ReadBytesExt>(
-    r: &mut R,
-) -> Result<Vec<u8>, Error> {
+pub(crate) fn read_str_payload<F: EndiannessImpl, R: Budget>(r: &mut R) -> Result<Vec<u8>, Error> {
     let len = read_str_len::<F, R>(r)? as usize;
     read_exact_bounded(r, len)
 }
 
 /// Reads a `String`-tag payload as text: Java's modified UTF-8 for the
 /// big-endian variant, plain UTF-8 otherwise.
-pub(crate) fn read_string<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Result<String, Error> {
+pub(crate) fn read_string<F: EndiannessImpl, R: Budget>(r: &mut R) -> Result<String, Error> {
     let bytes = read_str_payload::<F, R>(r)?;
     Ok(match F::AS_ENUM {
         Variant::BigEndian => mutf8::decode(bytes)?,
@@ -458,7 +457,7 @@ fn write_leaf_value<F: EndiannessImpl, W: WriteBytesExt>(
 /// [`MAX_DEPTH`] before recursing, so a malicious stream of nested `List`s or
 /// `Compound`s yields [`Error::MaxDepthExceeded`] instead of overflowing the
 /// stack (which would abort the process).
-pub(crate) fn read_value<F: EndiannessImpl, R: ReadBytesExt>(
+pub(crate) fn read_value<F: EndiannessImpl, R: Budget>(
     r: &mut R,
     ty: FieldType,
     depth: usize,
@@ -468,9 +467,10 @@ pub(crate) fn read_value<F: EndiannessImpl, R: ReadBytesExt>(
     // function is one of the two frames per nesting level, and an unoptimised
     // build would otherwise exhaust a default 2 MiB thread stack well before
     // reaching `MAX_DEPTH`.
+    r.charge()?;
     Ok(match ty {
         FieldType::List => {
-            check_depth(depth)?;
+            r.enter(depth)?;
             let elem = read_tag(r)?;
             let len = read_seq_len::<F, R>(r)? as usize;
             let mut out = Vec::with_capacity(prealloc::<Value>(len));
@@ -488,10 +488,7 @@ pub(crate) fn read_value<F: EndiannessImpl, R: ReadBytesExt>(
 /// recursive frame stays small; `#[inline(never)]` keeps the split effective in
 /// unoptimised builds, where it matters most.
 #[inline(never)]
-fn read_leaf_value<F: EndiannessImpl, R: ReadBytesExt>(
-    r: &mut R,
-    ty: FieldType,
-) -> Result<Value, Error> {
+fn read_leaf_value<F: EndiannessImpl, R: Budget>(r: &mut R, ty: FieldType) -> Result<Value, Error> {
     Ok(match ty {
         FieldType::End => {
             return Err(Error::UnexpectedEnd(UnexpectedEnd {
@@ -550,11 +547,11 @@ fn read_leaf_value<F: EndiannessImpl, R: ReadBytesExt>(
 /// the document's internal consistency. (The naive implementation — inserting
 /// into a map — gives last-wins instead.) The dropped value is still fully
 /// parsed, so the stream stays in sync.
-pub(crate) fn read_compound<F: EndiannessImpl, R: ReadBytesExt>(
+pub(crate) fn read_compound<F: EndiannessImpl, R: Budget>(
     r: &mut R,
     depth: usize,
 ) -> Result<Compound, Error> {
-    check_depth(depth)?;
+    r.enter(depth)?;
     let mut map = Compound::new();
     loop {
         let ty = read_tag(r)?;
@@ -567,6 +564,7 @@ pub(crate) fn read_compound<F: EndiannessImpl, R: ReadBytesExt>(
         // cheapest deep document an attacker can send, and this halves the
         // number of stack frames it costs (one per level instead of two).
         let value = if ty == FieldType::Compound {
+            r.charge()?;
             Value::Compound(read_compound::<F, R>(r, depth + 1)?)
         } else {
             read_value::<F, R>(r, ty, depth + 1)?

@@ -34,12 +34,15 @@ use facet_reflect::Partial;
 use crate::error::UnexpectedEnd;
 use crate::named;
 use crate::nbt::io;
+use crate::nbt::source::{Budget, Source};
 // Shared with the SNBT codec and the `Value` conversion; see `crate::reflect`.
 use crate::reflect::{
     Lenient, VariantAs, WireScalar, is_bstring, is_value, lenient_discriminant, reflect_err,
     scalar_tag, set_lenient, unexpected_type, unknown_field, unsupported,
 };
-use crate::{BigEndian, EndiannessImpl, Error, FieldType, LittleEndian, VarintEndian};
+use crate::{
+    BigEndian, DecodeOptions, EndiannessImpl, Error, FieldType, LittleEndian, VarintEndian,
+};
 
 type Part<'f> = Partial<'f, true>;
 
@@ -54,7 +57,7 @@ type Part<'f> = Partial<'f, true>;
 /// struct field this subtree belongs to, carried down so that one declaration
 /// widens every element of a `Vec` and the inside of an `Option` alike. It is
 /// one `Copy` byte precisely because it rides this recursive path.
-fn read_into<'f, F: EndiannessImpl, R: ReadBytesExt>(
+fn read_into<'f, F: EndiannessImpl, R: Budget>(
     p: Part<'f>,
     shape: &'static Shape,
     tag: FieldType,
@@ -73,6 +76,7 @@ fn read_into<'f, F: EndiannessImpl, R: ReadBytesExt>(
     if is_value(shape) {
         return read_value_leaf::<F, R>(p, tag, r, depth);
     }
+    r.charge()?;
 
     // Option: the key was present, so this is `Some`.
     if let Def::Option(def) = shape.def {
@@ -103,7 +107,7 @@ fn read_into<'f, F: EndiannessImpl, R: ReadBytesExt>(
 /// Reads a dynamic [`Value`] subtree. Split out of [`read_into`] so the 80-byte
 /// `Value` temporary does not sit in every recursive frame.
 #[inline(never)]
-fn read_value_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
+fn read_value_leaf<'f, F: EndiannessImpl, R: Budget>(
     p: Part<'f>,
     tag: FieldType,
     r: &mut R,
@@ -116,7 +120,7 @@ fn read_value_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
 /// All the non-recursive target types. Split out of [`read_into`] to keep the
 /// recursive frame small; see the comment there.
 #[inline(never)]
-fn read_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
+fn read_leaf<'f, F: EndiannessImpl, R: Budget>(
     p: Part<'f>,
     shape: &'static Shape,
     tag: FieldType,
@@ -151,7 +155,7 @@ fn read_leaf<'f, F: EndiannessImpl, R: ReadBytesExt>(
 
 /// Reads a unit enum variant. See [`crate::reflect::VariantAs`] for the modes.
 #[inline(never)]
-fn read_enum<'f, F: EndiannessImpl, R: ReadBytesExt>(
+fn read_enum<'f, F: EndiannessImpl, R: Budget>(
     p: Part<'f>,
     shape: &'static Shape,
     tag: FieldType,
@@ -195,10 +199,7 @@ fn read_enum<'f, F: EndiannessImpl, R: ReadBytesExt>(
 /// unreachable, and is written as the tag mismatch it would be rather than a
 /// panic.
 #[inline(never)]
-fn read_wire<F: EndiannessImpl, R: ReadBytesExt>(
-    r: &mut R,
-    tag: FieldType,
-) -> Result<WireScalar, Error> {
+fn read_wire<F: EndiannessImpl, R: Budget>(r: &mut R, tag: FieldType) -> Result<WireScalar, Error> {
     Ok(match tag {
         FieldType::Byte => WireScalar::Byte(io::read_i8(r)?),
         FieldType::Short => WireScalar::Short(io::read_i16::<F, R>(r)?),
@@ -211,7 +212,7 @@ fn read_wire<F: EndiannessImpl, R: ReadBytesExt>(
 }
 
 #[inline(never)]
-fn read_scalar<'f, F: EndiannessImpl, R: ReadBytesExt>(
+fn read_scalar<'f, F: EndiannessImpl, R: Budget>(
     p: Part<'f>,
     scalar: ScalarType,
     tag: FieldType,
@@ -288,7 +289,7 @@ fn read_scalar<'f, F: EndiannessImpl, R: ReadBytesExt>(
 /// own element type, the typed arrays imply theirs. Split out of [`read_seq`] to
 /// keep that recursive frame small.
 #[inline(never)]
-fn read_seq_header<F: EndiannessImpl, R: ReadBytesExt>(
+fn read_seq_header<F: EndiannessImpl, R: Budget>(
     tag: FieldType,
     r: &mut R,
 ) -> Result<(FieldType, usize), Error> {
@@ -310,7 +311,7 @@ fn read_seq_header<F: EndiannessImpl, R: ReadBytesExt>(
 /// Split out (and never inlined) so the 80-byte `Value` temporary it needs stays
 /// out of the frames of the recursive `read_struct`/`read_map`.
 #[inline(never)]
-fn skip_value<F: EndiannessImpl, R: ReadBytesExt>(
+fn skip_value<F: EndiannessImpl, R: Budget>(
     r: &mut R,
     tag: FieldType,
     depth: usize,
@@ -321,7 +322,7 @@ fn skip_value<F: EndiannessImpl, R: ReadBytesExt>(
 
 /// Reads a `List`/`ByteArray`/`IntArray`/`LongArray` tag into a `Vec`
 /// (`array_len = None`) or fixed-size array (`array_len = Some(n)`).
-fn read_seq<'f, F: EndiannessImpl, R: ReadBytesExt>(
+fn read_seq<'f, F: EndiannessImpl, R: Budget>(
     p: Part<'f>,
     elem_shape: &'static Shape,
     tag: FieldType,
@@ -330,7 +331,7 @@ fn read_seq<'f, F: EndiannessImpl, R: ReadBytesExt>(
     depth: usize,
     lenient: Lenient,
 ) -> Result<Part<'f>, Error> {
-    io::check_depth(depth)?;
+    r.enter(depth)?;
     let (elem_tag, len) = read_seq_header::<F, R>(tag, r)?;
 
     if let Some(n) = array_len {
@@ -357,7 +358,7 @@ fn read_seq<'f, F: EndiannessImpl, R: ReadBytesExt>(
 
 /// Reads a `Compound` into a map. Duplicate keys are first-wins, matching
 /// [`io::read_compound`].
-fn read_map<'f, F: EndiannessImpl, R: ReadBytesExt>(
+fn read_map<'f, F: EndiannessImpl, R: Budget>(
     p: Part<'f>,
     _key_shape: &'static Shape,
     value_shape: &'static Shape,
@@ -368,7 +369,7 @@ fn read_map<'f, F: EndiannessImpl, R: ReadBytesExt>(
     if tag != FieldType::Compound {
         return Err(unexpected_type(FieldType::Compound, tag));
     }
-    io::check_depth(depth)?;
+    r.enter(depth)?;
     let mut seen: HashSet<String> = HashSet::new();
     let mut p = p.init_map().map_err(reflect_err)?;
     loop {
@@ -402,7 +403,7 @@ fn read_map<'f, F: EndiannessImpl, R: ReadBytesExt>(
 ///   and discarded (the pre-4.0 behaviour).
 /// * A key that repeats keeps the value of its *first* occurrence, matching
 ///   [`io::read_compound`].
-fn read_struct<'f, F: EndiannessImpl, R: ReadBytesExt>(
+fn read_struct<'f, F: EndiannessImpl, R: Budget>(
     p: Part<'f>,
     shape: &'static Shape,
     tag: FieldType,
@@ -412,7 +413,7 @@ fn read_struct<'f, F: EndiannessImpl, R: ReadBytesExt>(
     if tag != FieldType::Compound {
         return Err(unexpected_type(FieldType::Compound, tag));
     }
-    io::check_depth(depth)?;
+    r.enter(depth)?;
     let Type::User(UserType::Struct(st)) = shape.ty else {
         return Err(unsupported("expected a struct"));
     };
@@ -466,6 +467,15 @@ fn read_struct<'f, F: EndiannessImpl, R: ReadBytesExt>(
 pub fn from_bytes<'f, F: EndiannessImpl, T: Facet<'f>>(
     reader: &mut impl ReadBytesExt,
 ) -> Result<T, Error> {
+    from_bytes_with::<F, T>(reader, DecodeOptions::default())
+}
+
+/// [`from_bytes`] under the given limits instead of the defaults.
+pub fn from_bytes_with<'f, F: EndiannessImpl, T: Facet<'f>>(
+    reader: &mut impl ReadBytesExt,
+    options: DecodeOptions,
+) -> Result<T, Error> {
+    let reader = &mut Source::new(reader, options);
     let root_tag = io::read_tag(reader)?;
     if root_tag == FieldType::End {
         // A lone `TAG_End` is the compound terminator, not a document.
@@ -485,6 +495,7 @@ pub fn from_bytes<'f, F: EndiannessImpl, T: Facet<'f>>(
 pub fn from_bytes_or_default<'f, F: EndiannessImpl, T: Facet<'f> + Default>(
     reader: &mut impl ReadBytesExt,
 ) -> Result<T, Error> {
+    let reader = &mut Source::new(reader, DecodeOptions::default());
     match io::read_tag(reader)? {
         FieldType::End => Ok(T::default()),
         root_tag => read_root::<F, T>(root_tag, reader),
@@ -493,7 +504,7 @@ pub fn from_bytes_or_default<'f, F: EndiannessImpl, T: Facet<'f> + Default>(
 
 fn read_root<'f, F: EndiannessImpl, T: Facet<'f>>(
     root_tag: FieldType,
-    reader: &mut impl ReadBytesExt,
+    reader: &mut impl Budget,
 ) -> Result<T, Error> {
     let root_name = io::read_str_payload::<F, _>(reader)?;
 
@@ -521,10 +532,18 @@ fn read_root<'f, F: EndiannessImpl, T: Facet<'f>>(
 }
 
 macro_rules! endian_fn {
-    ($from:ident, $endian:ty, $doc:literal) => {
+    ($from:ident, $from_with:ident, $endian:ty, $doc:literal) => {
         #[doc = $doc]
         pub fn $from<'f, T: Facet<'f>>(reader: &mut impl ReadBytesExt) -> Result<T, Error> {
             from_bytes::<$endian, T>(reader)
+        }
+
+        #[doc = concat!("[`", stringify!($from), "`] under the given limits instead of the defaults.")]
+        pub fn $from_with<'f, T: Facet<'f>>(
+            reader: &mut impl ReadBytesExt,
+            options: DecodeOptions,
+        ) -> Result<T, Error> {
+            from_bytes_with::<$endian, T>(reader, options)
         }
     };
 }
@@ -558,16 +577,19 @@ endian_or_default_fn!(
 
 endian_fn!(
     from_be_bytes,
+    from_be_bytes_with,
     BigEndian,
     "Reads a value from big-endian NBT (fixed-width big-endian integers)."
 );
 endian_fn!(
     from_le_bytes,
+    from_le_bytes_with,
     LittleEndian,
     "Reads a value from little-endian NBT (Minecraft: Bedrock Edition, disk)."
 );
 endian_fn!(
     from_varint_bytes,
+    from_varint_bytes_with,
     VarintEndian,
     "Reads a value from varint little-endian NBT (Minecraft: Bedrock Edition, network)."
 );

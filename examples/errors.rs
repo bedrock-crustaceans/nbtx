@@ -231,6 +231,8 @@ fn variant_name(err: &Error) -> &'static str {
         Error::MaxDepthExceeded(_) => "Error::MaxDepthExceeded",
         Error::InvalidVarint(_) => "Error::InvalidVarint",
         Error::StringLengthExceeded(_) => "Error::StringLengthExceeded",
+        Error::InputSizeExceeded { .. } => "Error::InputSizeExceeded",
+        Error::NodeCountExceeded { .. } => "Error::NodeCountExceeded",
         Error::UnknownField(_) => "Error::UnknownField",
         Error::MissingVariantAs(_) => "Error::MissingVariantAs",
         Error::DiscriminantOutOfRange(_) => "Error::DiscriminantOutOfRange",
