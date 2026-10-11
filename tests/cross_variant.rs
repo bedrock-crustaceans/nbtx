@@ -16,8 +16,8 @@
 
 use bstr::BString;
 use nbtx::{
-    Compound, Named, Value, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes,
-    to_le_bytes, to_varint_bytes,
+    Compound, Named, Value, ValueList, from_be_bytes, from_le_bytes, from_varint_bytes,
+    to_be_bytes, to_le_bytes, to_varint_bytes,
 };
 
 const BIG_TEST_NBT: &[u8] = include_bytes!("fixtures/bigtest.nbt");
@@ -34,13 +34,15 @@ fn hex(s: &str) -> Vec<u8> {
         .collect()
 }
 
+fn map(entries: &[(&str, Value)]) -> Compound {
+    entries
+        .iter()
+        .map(|(k, v)| (BString::from(*k), v.clone()))
+        .collect()
+}
+
 fn comp(entries: &[(&str, Value)]) -> Value {
-    Value::Compound(
-        entries
-            .iter()
-            .map(|(k, v)| (BString::from(*k), v.clone()))
-            .collect::<Compound>(),
-    )
+    Value::Compound(map(entries))
 }
 
 /// A representative spread: every tag, both empty and populated containers,
@@ -65,7 +67,7 @@ fn representative_documents() -> Vec<(&'static str, Value)> {
                     "string",
                     Value::String(BString::from(vec![0xffu8, 0x00, b'a'])),
                 ),
-                ("list", Value::List(vec![Value::Short(1), Value::Short(-1)])),
+                ("list", Value::List(ValueList::Short(vec![1, -1]))),
                 ("ints", Value::IntArray(vec![i32::MIN, 0, i32::MAX])),
                 ("longs", Value::LongArray(vec![i64::MIN, 0, i64::MAX])),
             ]),
@@ -76,7 +78,7 @@ fn representative_documents() -> Vec<(&'static str, Value)> {
                 ("ba", Value::ByteArray(vec![])),
                 ("ia", Value::IntArray(vec![])),
                 ("la", Value::LongArray(vec![])),
-                ("li", Value::List(vec![])),
+                ("li", Value::List(ValueList::End)),
                 ("co", comp(&[])),
             ]),
         ),
@@ -84,7 +86,10 @@ fn representative_documents() -> Vec<(&'static str, Value)> {
             "nested",
             comp(&[(
                 "a",
-                Value::List(vec![comp(&[("b", Value::List(vec![Value::Long(7)]))])]),
+                Value::List(ValueList::Compound(vec![map(&[(
+                    "b",
+                    Value::List(ValueList::Long(vec![7])),
+                )])])),
             )]),
         ),
     ]
@@ -244,8 +249,31 @@ fn a_nan_in_a_fixture_keeps_its_bits_across_variants() {
         match v {
             Value::Double(d) if d.is_nan() => vec![d.to_bits()],
             Value::Float(f) if f.is_nan() => vec![u64::from(f.to_bits())],
-            Value::List(items) => items.iter().flat_map(nan_bits).collect(),
-            Value::Compound(map) => map.values().flat_map(nan_bits).collect(),
+            // `ValueList` stores its elements unboxed, so the two float
+            // element types are read straight out of their vectors rather than
+            // through a per-element `Value`.
+            Value::List(ValueList::Float(items)) => items
+                .iter()
+                .filter(|f| f.is_nan())
+                .map(|f| u64::from(f.to_bits()))
+                .collect(),
+            Value::List(ValueList::Double(items)) => items
+                .iter()
+                .filter(|d| d.is_nan())
+                .map(|d| d.to_bits())
+                .collect(),
+            Value::List(ValueList::List(items)) => items
+                .iter()
+                .flat_map(|l| nan_bits(&Value::List(l.clone())))
+                .collect(),
+            Value::List(ValueList::Compound(items)) => items
+                .iter()
+                .flat_map(|m| nan_bits(&Value::Compound(m.clone())))
+                .collect(),
+            // Every other element type is an integer, a string or an array:
+            // nothing that can be a NaN.
+            Value::List(_) => Vec::new(),
+            Value::Compound(entries) => entries.values().flat_map(nan_bits).collect(),
             _ => Vec::new(),
         }
     }

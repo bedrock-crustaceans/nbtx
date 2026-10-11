@@ -13,7 +13,7 @@
 //! `to_string`/`from_string` accept the same types as the binary codec, so
 //! anything you can encode you can also print, and vice versa.
 
-use nbtx::{Compound, Value};
+use nbtx::{Compound, Value, ValueList};
 
 fn main() -> Result<(), nbtx::Error> {
     let item = Value::Compound(Compound::from_iter([
@@ -26,16 +26,16 @@ fn main() -> Result<(), nbtx::Error> {
                 ("Unbreakable".into(), Value::Byte(1)),
                 (
                     "Enchantments".into(),
-                    Value::List(vec![
-                        Value::Compound(Compound::from_iter([
+                    Value::List(ValueList::Compound(vec![
+                        Compound::from_iter([
                             ("id".into(), Value::String("minecraft:sharpness".into())),
                             ("lvl".into(), Value::Short(5)),
-                        ])),
-                        Value::Compound(Compound::from_iter([
+                        ]),
+                        Compound::from_iter([
                             ("id".into(), Value::String("minecraft:unbreaking".into())),
                             ("lvl".into(), Value::Short(3)),
-                        ])),
-                    ]),
+                        ]),
+                    ])),
                 ),
                 ("UUID".into(), Value::IntArray(vec![1, 2, 3, 4])),
                 ("Icon".into(), Value::ByteArray(vec![0xde, 0xad])),

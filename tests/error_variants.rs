@@ -284,8 +284,8 @@ fn unexpected_type_at_the_root_names_the_container_tag() {
 #[cfg(feature = "nbt")]
 #[test]
 fn heterogeneous_list_names_the_expected_and_offending_tags() {
-    let doc = Value::List(vec![Value::Byte(1), Value::Byte(2), Value::Int(3)]);
-    match to_be_bytes(&doc).expect_err("must reject") {
+    let mixed = vec![Value::Byte(1), Value::Byte(2), Value::Int(3)];
+    match nbtx::ValueList::try_from(mixed).expect_err("must reject") {
         Error::HeterogeneousList { expected, found } => {
             assert_eq!(expected, nbtx::FieldType::Byte);
             assert_eq!(found, nbtx::FieldType::Int);
@@ -578,5 +578,7 @@ fn the_result_alias_composes_with_the_question_mark_operator() {
         from_be_bytes(&mut bytes.as_slice())
     }
     assert_eq!(roundtrip(&Value::Int(1)).unwrap(), Value::Int(1));
-    assert!(roundtrip(&Value::List(vec![Value::Byte(1), Value::Int(1)])).is_err());
+    assert!(roundtrip(&Value::String(BString::from("x"))).is_ok());
+    // A `Named` root with an over-long name is the cheapest encode failure.
+    assert!(roundtrip(&Value::String(BString::from(vec![b'x'; 40_000]))).is_err());
 }

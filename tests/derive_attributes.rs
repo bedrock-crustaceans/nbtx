@@ -15,8 +15,8 @@
 use bstr::BString;
 use facet::Facet;
 use nbtx::{
-    Compound, Value, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes, to_le_bytes,
-    to_varint_bytes,
+    Compound, Value, ValueList, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes,
+    to_le_bytes, to_varint_bytes,
 };
 use std::collections::{BTreeMap, HashMap};
 
@@ -327,7 +327,7 @@ fn option_of_a_dynamic_value_roundtrips() {
     for v in [
         None,
         Some(Value::LongArray(vec![1, 2])),
-        Some(Value::List(vec![])),
+        Some(Value::List(ValueList::End)),
     ] {
         let s = S { v: v.clone() };
         let bytes = to_be_bytes(&s).unwrap();
@@ -405,8 +405,9 @@ fn a_vec_of_structs_becomes_a_list_of_compounds() {
     let v = as_value(&inv);
     let list = get(&v, "items").as_list().unwrap();
     assert_eq!(list.len(), 2);
-    assert!(list[0].is_compound());
-    assert_eq!(get(&list[0], "id"), &Value::String(BString::from("stone")));
+    let first = list.get(0).expect("two elements");
+    assert!(first.is_compound());
+    assert_eq!(get(&first, "id"), &Value::String(BString::from("stone")));
 }
 
 /// A fixed-size array of structs uses a different reader (`init_array` plus
@@ -552,6 +553,61 @@ fn both_standard_map_types_become_compounds() {
         .map(ToString::to_string)
         .collect();
     assert_eq!(keys, ["a", "b"]);
+}
+
+/// KNOWN GAP: a map keyed by `bstr::BString` — the key type of `Compound`
+/// itself — is rejected by every codec, in both directions.
+///
+/// A `BString` reflects as a `Def::List<u8>` rather than a string scalar, so
+/// `Peek::as_str` answers `None` for it. Every *value* path special-cases that
+/// (a `BString` value is a `String` tag in all three codecs); the *key* paths do
+/// not, and fail with `Unsupported { op: "map keys must be strings" }` on the way
+/// out. Coming back in, `read_map` ignores the key shape it is handed and always
+/// sets a `String`, so the key arrives with the wrong shape.
+///
+/// The consequence is that `Compound` — the crate's own alias, which *is*
+/// `BString`-keyed — cannot be written on its own; it only encodes wrapped in a
+/// `Value::Compound`, which never reaches the generic map path.
+#[test]
+#[ignore = "KNOWN GAP: `BString` map keys are rejected by every codec, encoding and decoding"]
+fn a_bstring_keyed_map_is_a_compound_like_any_other() {
+    let m: BTreeMap<BString, i32> = [(BString::from("a"), 1), (BString::from("b"), 2)]
+        .into_iter()
+        .collect();
+    // The same document keyed by `String`, which the map path does accept. NBT
+    // has one key representation, so the two must encode to identical bytes.
+    let reference: BTreeMap<String, i32> = [("a".to_owned(), 1), ("b".to_owned(), 2)]
+        .into_iter()
+        .collect();
+
+    macro_rules! check {
+        ($to:ident, $from:ident) => {{
+            let bytes = $to(&m).expect("a `BString`-keyed map must encode");
+            assert_eq!(bytes, $to(&reference).unwrap(), "a `BString` key is a key");
+            let back: BTreeMap<BString, i32> =
+                $from(&mut bytes.as_slice()).expect("a `BString`-keyed map must decode");
+            assert_eq!(back, m);
+        }};
+    }
+    for_each_endian!(check);
+
+    assert_eq!(
+        nbtx::to_value(&m).unwrap(),
+        nbtx::to_value(&reference).unwrap()
+    );
+    #[cfg(feature = "snbt")]
+    assert_eq!(
+        nbtx::to_string(&m).unwrap(),
+        nbtx::to_string(&reference).unwrap()
+    );
+
+    // And the alias itself, which is what a caller reaches for when hashing or
+    // re-ordering a decoded document.
+    let c = Compound::from([(BString::from("a"), Value::Int(1))]);
+    assert_eq!(
+        to_be_bytes(&c).expect("a `Compound` must encode on its own"),
+        to_be_bytes(&Value::Compound(c.clone())).unwrap()
+    );
 }
 
 /// A map accepts any key by definition, so the unknown-field denial that applies

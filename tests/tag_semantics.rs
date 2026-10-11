@@ -9,8 +9,8 @@
 
 use bstr::BString;
 use nbtx::{
-    Compound, Value, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes, to_le_bytes,
-    to_varint_bytes,
+    Compound, Value, ValueList, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes,
+    to_le_bytes, to_varint_bytes,
 };
 
 fn compound(entries: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
@@ -107,7 +107,7 @@ fn every_tag_type_roundtrips_in_all_variants() {
         ("double", Value::Double(1.0)),
         ("bytearray", Value::ByteArray(vec![1])),
         ("string", Value::String(BString::from("string"))),
-        ("list", Value::List(vec![Value::Byte(1)])),
+        ("list", Value::List(ValueList::Byte(vec![1]))),
         ("intarray", Value::IntArray(vec![1])),
     ]);
 
@@ -139,7 +139,10 @@ fn every_tag_type_including_long_array_reencodes_identically() {
         (BString::from("f_double"), Value::Double(1.0)),
         (BString::from("g_bytearray"), Value::ByteArray(vec![1])),
         (BString::from("h_string"), Value::String("string".into())),
-        (BString::from("i_list"), Value::List(vec![Value::Byte(1)])),
+        (
+            BString::from("i_list"),
+            Value::List(ValueList::Byte(vec![1])),
+        ),
         (BString::from("j_intarray"), Value::IntArray(vec![1])),
         (BString::from("k_longarray"), Value::LongArray(vec![1])),
     ]));
@@ -256,11 +259,11 @@ fn double_value_roundtrip() {
 
 #[test]
 fn list_homogeneous_roundtrip() {
-    let list = Value::List(vec![
-        Value::String("test0".into()),
-        Value::String("test1".into()),
-        Value::String("test2".into()),
-    ]);
+    let list = Value::List(ValueList::String(vec![
+        "test0".into(),
+        "test1".into(),
+        "test2".into(),
+    ]));
     let value = root("list", list.clone());
     let bytes = to_be_bytes(&value).unwrap();
     let back: Value = from_be_bytes(&mut bytes.as_slice()).unwrap();
@@ -269,18 +272,32 @@ fn list_homogeneous_roundtrip() {
 }
 
 /// A list carries one element-type byte for all of its elements, so a
-/// heterogeneous `Value::List` has no valid encoding. It is rejected at encode
-/// time rather than silently written in a form that would desync the reader.
+/// heterogeneous list has no valid encoding at all. It is rejected as the list
+/// is built, rather than silently written in a form that would desync the
+/// reader — so a document holding one can never be handed to an encoder.
 #[test]
-fn list_heterogeneous_is_rejected_on_encode() {
-    let value = root("list", Value::List(vec![Value::Byte(1), Value::Int(300)]));
+fn list_heterogeneous_is_rejected_when_the_list_is_built() {
+    let res = ValueList::try_from(vec![Value::Byte(1), Value::Int(300)]);
+    assert!(
+        matches!(res, Err(nbtx::Error::HeterogeneousList { .. })),
+        "expected HeterogeneousList, got {res:?}"
+    );
+    // Pushing the odd element onto a typed list is the same refusal.
+    let mut list = ValueList::Byte(vec![1]);
+    assert!(
+        matches!(
+            list.push(Value::Int(300)),
+            Err(nbtx::Error::HeterogeneousList { .. })
+        ),
+        "push must refuse a foreign tag"
+    );
+    // ...and the untouched list still encodes.
+    let value = root("list", Value::List(list));
     macro_rules! check {
         ($to:ident, $from:ident) => {{
-            let res = $to(&value);
-            assert!(
-                matches!(res, Err(nbtx::Error::HeterogeneousList { .. })),
-                "expected HeterogeneousList, got {res:?}"
-            );
+            let bytes = $to(&value).unwrap();
+            let back: Value = $from(&mut bytes.as_slice()).unwrap();
+            assert_eq!(back, value);
         }};
     }
     for_each_endian!(check);
@@ -290,7 +307,7 @@ fn list_heterogeneous_is_rejected_on_encode() {
 /// meanings, and `Value` must not conflate them in either direction.
 #[test]
 fn list_of_int_is_distinct_from_int_array() {
-    let list = compound([("v", Value::List(vec![Value::Int(1), Value::Int(2)]))]);
+    let list = compound([("v", Value::List(ValueList::Int(vec![1, 2])))]);
     let array = compound([("v", Value::IntArray(vec![1, 2]))]);
 
     let lb = to_be_bytes(&list).unwrap();
@@ -304,44 +321,16 @@ fn list_of_int_is_distinct_from_int_array() {
     assert_eq!(from_be_bytes::<Value>(&mut ab.as_slice()).unwrap(), array);
 }
 
-/// `Value::List(Vec<Value>)` has nowhere to store the element type an *empty*
-/// list declared on the wire, so it re-emits the canonical TAG_End. This pins
-/// the normalisation as a **fixpoint**: the declared type collapses exactly
-/// once, nothing else about the document changes, and re-encoding again is a
-/// no-op. Closing the gap would need an element-type field on `Value::List`,
-/// i.e. a representation change rather than a codec fix.
+/// An *empty* typed list keeps the element type the wire declared.
+///
+/// `Value::List` carries a [`ValueList`], which names an element type whether
+/// or not it has any elements, so an empty `List<Byte>` decodes as
+/// `ValueList::Byte(vec![])` and re-encodes with element-type byte 1 —
+/// byte-for-byte the input. Before 4.0 the payload was a `Vec<Value>`, which
+/// had nowhere to put that byte and normalised every empty list to `TAG_End`;
+/// that divergence from pmmp/NBT and gophertunnel is what the typed payload
+/// removes.
 #[test]
-fn empty_list_element_type_collapses_to_tag_end() {
-    let mut buf = be::root_compound();
-    be::entry_header(&mut buf, 9, b"list");
-    buf.push(1); // element type TAG_Byte
-    buf.extend_from_slice(&0i32.to_be_bytes()); // length 0
-    be::end(&mut buf);
-
-    let back: Value = from_be_bytes(&mut buf.as_slice()).unwrap();
-    assert_eq!(get(&back, "list"), &Value::List(vec![]));
-
-    let re = to_be_bytes(&back).unwrap();
-    let mut expected = buf.clone();
-    let elem_type_idx = buf.len() - 6;
-    assert_eq!(expected[elem_type_idx], 1);
-    expected[elem_type_idx] = 0; // TAG_End
-    assert_eq!(
-        re, expected,
-        "the empty list's declared element type collapses to TAG_End; everything else is identical"
-    );
-
-    // ...and re-encoding again changes nothing (byte-stable fixpoint).
-    let back2: Value = from_be_bytes(&mut re.as_slice()).unwrap();
-    assert_eq!(to_be_bytes(&back2).unwrap(), re);
-}
-
-/// The other side of the same trade-off, kept as an executable record of what
-/// is given up.
-#[test]
-#[ignore = "ACCEPTED DIVERGENCE (by design): Value::List cannot store an empty list's element type, \
-            so it re-encodes as TAG_End. Fixing it needs a Value representation change, not a \
-            codec fix."]
 fn empty_typed_list_preserves_element_type() {
     let mut buf = be::root_compound();
     be::entry_header(&mut buf, 9, b"list"); // TAG_List
@@ -350,11 +339,36 @@ fn empty_typed_list_preserves_element_type() {
     be::end(&mut buf);
 
     let back: Value = from_be_bytes(&mut buf.as_slice()).unwrap();
+    assert_eq!(
+        get(&back, "list"),
+        &Value::List(ValueList::Byte(Vec::new()))
+    );
+
     let re = to_be_bytes(&back).unwrap();
     assert_eq!(
         re, buf,
         "empty list's element type (TAG_Byte) must survive a round-trip"
     );
+}
+
+/// `TAG_End` as an element type is still legal — for a list that really is
+/// untyped — and it stays distinct from an empty typed list in both directions.
+#[test]
+fn an_empty_end_list_is_distinct_from_an_empty_typed_list() {
+    let mut buf = be::root_compound();
+    be::entry_header(&mut buf, 9, b"list");
+    buf.push(0); // element type TAG_End
+    buf.extend_from_slice(&0i32.to_be_bytes()); // length 0
+    be::end(&mut buf);
+
+    let back: Value = from_be_bytes(&mut buf.as_slice()).unwrap();
+    assert_eq!(get(&back, "list"), &Value::List(ValueList::End));
+    assert_ne!(
+        get(&back, "list"),
+        &Value::List(ValueList::Byte(Vec::new())),
+        "element type 0 and element type 1 are different values"
+    );
+    assert_eq!(to_be_bytes(&back).unwrap(), buf);
 }
 
 /// Compound keys are strings, never numbers, so a numeric-looking key stays a

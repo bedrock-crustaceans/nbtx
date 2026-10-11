@@ -97,8 +97,9 @@ fn main() {
         // A `List` stores a single element-type byte for the whole list, so
         // this cannot be encoded at all. Writing it anyway would desync the
         // stream and make later keys vanish on the next read.
-        let mixed = Value::List(vec![Value::Int(1), Value::String("two".into())]);
-        nbtx::to_be_bytes(&mixed).map(drop)
+        // `Value::List` holds a `ValueList`, so the mixture is caught where the
+        // list is built rather than on the way out.
+        nbtx::ValueList::try_from(vec![Value::Int(1), Value::String("two".into())]).map(drop)
     });
 
     report("a type the codec has no NBT representation for", || {

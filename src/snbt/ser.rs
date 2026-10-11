@@ -9,6 +9,8 @@
 //!   string too (rendered lossily, since SNBT is text), not a byte array
 //! * `Vec<u8>`/`ByteArray` → `[B;1b,2b,..]`, `Vec<i32>`/`IntArray` →
 //!   `[I;1,2,..]`, `Vec<i64>`/`LongArray` → `[L;1l,2l,..]`, other lists → `[..]`
+//!   (a [`ValueList`] field included; SNBT has no syntax for an empty list's
+//!   element type, so every empty list is just `[]`)
 //! * struct/map/`Compound` → `{k:v,..}`
 //! * a unit enum variant → whatever its mandatory
 //!   `#[facet(nbtx::variant_as(<mode>))]` declares: its (rename-aware) name as a
@@ -23,8 +25,11 @@ use facet_reflect::Peek;
 // A `BString`/`BStr` renders as a quoted string rather than a `[B;..]`
 // byte-array literal, and a `Value` is detected by shape id: the same rules the
 // binary codec applies, shared from `crate::reflect` so the two cannot drift.
-use crate::reflect::{EnumWire, enum_wire, is_bstring, is_value, reflect_err, unsupported};
-use crate::{Error, FieldType, Value, check_depth};
+use crate::reflect::{
+    EnumWire, enum_wire, is_bstring, is_value, is_value_list, reflect_err, unsupported,
+    unwrap_option, value_tag,
+};
+use crate::{Compound, Error, FieldType, Value, ValueList, check_depth};
 
 /// Serializes `value` into an SNBT string.
 pub fn to_string<'f, T: Facet<'f> + ?Sized>(value: &'f T) -> Result<String, Error> {
@@ -120,63 +125,147 @@ fn render_value(out: &mut String, v: &Value, depth: usize) -> Result<(), Error> 
             out.push('d');
         }
         Value::String(s) => quote_string(out, &s.to_str_lossy()),
-        Value::ByteArray(bytes) => {
-            out.push_str("[B;");
-            for (i, b) in bytes.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&b.cast_signed().to_string());
-                out.push('b');
-            }
-            out.push(']');
-        }
-        Value::IntArray(ints) => {
-            out.push_str("[I;");
-            for (i, n) in ints.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&n.to_string());
-            }
-            out.push(']');
-        }
-        Value::LongArray(longs) => {
-            out.push_str("[L;");
-            for (i, n) in longs.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&n.to_string());
-                out.push('l');
-            }
-            out.push(']');
-        }
-        Value::List(items) => {
-            check_depth(depth)?;
-            out.push('[');
+        Value::ByteArray(bytes) => render_byte_array(out, bytes),
+        Value::IntArray(ints) => render_int_array(out, ints),
+        Value::LongArray(longs) => render_long_array(out, longs),
+        Value::List(list) => return render_list(out, list, depth),
+        Value::Compound(map) => return render_compound(out, map, depth),
+    }
+    Ok(())
+}
+
+/// Renders a typed [`ValueList`] as `[a,b,c]`.
+///
+/// SNBT has no syntax for a list's element type — `[]` is all there is — so an
+/// empty list of *any* element type renders `[]` and parses back as
+/// [`ValueList::End`]. That is the one place the textual format is lossy where
+/// the binary one is not.
+fn render_list(out: &mut String, list: &ValueList, depth: usize) -> Result<(), Error> {
+    check_depth(depth)?;
+    out.push('[');
+    // Only the two recursive element types live in this frame; see the note on
+    // `render_value` about the depth bound.
+    match list {
+        ValueList::List(items) => {
             for (i, item) in items.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                render_value(out, item, depth + 1)?;
+                render_list(out, item, depth + 1)?;
             }
-            out.push(']');
         }
-        Value::Compound(map) => {
-            check_depth(depth)?;
-            out.push('{');
-            for (i, (k, v)) in map.iter().enumerate() {
+        ValueList::Compound(items) => {
+            for (i, item) in items.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                render_key(out, &k.to_str_lossy());
-                out.push(':');
-                render_value(out, v, depth + 1)?;
+                render_compound(out, item, depth + 1)?;
             }
-            out.push('}');
+        }
+        leaf => render_leaf_list(out, leaf),
+    }
+    out.push(']');
+    Ok(())
+}
+
+/// Renders the comma-separated elements of a list whose element type is not
+/// itself a container (the brackets are the caller's). Split out of
+/// [`render_list`] so that recursive frame stays small.
+#[inline(never)]
+fn render_leaf_list(out: &mut String, list: &ValueList) {
+    /// Renders each element of `$items` with `$render`, comma-separated.
+    macro_rules! each {
+        ($items:expr, |$item:pat_param| $render:expr) => {
+            for (i, item) in $items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                let $item = item;
+                $render;
+            }
+        };
+    }
+    match list {
+        ValueList::Byte(items) => each!(items, |v| render_suffixed(out, *v, 'b')),
+        ValueList::Short(items) => each!(items, |v| render_suffixed(out, *v, 's')),
+        // An `Int` is the one scalar that carries no suffix.
+        ValueList::Int(items) => each!(items, |v| out.push_str(&v.to_string())),
+        ValueList::Long(items) => each!(items, |v| render_suffixed(out, *v, 'l')),
+        ValueList::Float(items) => each!(items, |v| render_suffixed(out, *v, 'f')),
+        ValueList::Double(items) => each!(items, |v| render_suffixed(out, *v, 'd')),
+        ValueList::ByteArray(items) => each!(items, |v| render_byte_array(out, v)),
+        ValueList::String(items) => each!(items, |s| quote_string(out, &s.to_str_lossy())),
+        ValueList::IntArray(items) => each!(items, |v| render_int_array(out, v)),
+        ValueList::LongArray(items) => each!(items, |v| render_long_array(out, v)),
+        // Nothing to render: `End` has no elements (and SNBT drops its
+        // element type, as it drops every other empty list's — `[]` is the only
+        // spelling there is), and the two recursive element types never reach
+        // here because `render_list` handles them itself.
+        ValueList::End | ValueList::List(_) | ValueList::Compound(_) => {}
+    }
+}
+
+/// Renders one scalar with the SNBT type suffix of its tag (`1b`, `2s`, `3l`,
+/// `1.5f`, `2.5d`). The suffixless `Int` is the one case this does not cover.
+fn render_suffixed(out: &mut String, v: impl std::fmt::Display, suffix: char) {
+    out.push_str(&v.to_string());
+    out.push(suffix);
+}
+
+fn render_byte_array(out: &mut String, bytes: &[u8]) {
+    out.push_str("[B;");
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&b.cast_signed().to_string());
+        out.push('b');
+    }
+    out.push(']');
+}
+
+fn render_int_array(out: &mut String, ints: &[i32]) {
+    out.push_str("[I;");
+    for (i, n) in ints.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&n.to_string());
+    }
+    out.push(']');
+}
+
+fn render_long_array(out: &mut String, longs: &[i64]) {
+    out.push_str("[L;");
+    for (i, n) in longs.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&n.to_string());
+        out.push('l');
+    }
+    out.push(']');
+}
+
+/// Renders a [`Compound`] as `{k:v,..}`.
+fn render_compound(out: &mut String, map: &Compound, depth: usize) -> Result<(), Error> {
+    check_depth(depth)?;
+    out.push('{');
+    for (i, (k, v)) in map.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        render_key(out, &k.to_str_lossy());
+        out.push(':');
+        // Dispatch to the nested container directly, so a deep document costs
+        // one frame per level.
+        match v {
+            Value::List(list) => render_list(out, list, depth + 1)?,
+            Value::Compound(inner) => render_compound(out, inner, depth + 1)?,
+            leaf => render_value(out, leaf, depth + 1)?,
         }
     }
+    out.push('}');
     Ok(())
 }
 
@@ -187,6 +276,11 @@ fn render(out: &mut String, peek: Peek, depth: usize) -> Result<(), Error> {
 
     if is_value(shape) {
         return render_value(out, peek.get::<Value>().map_err(reflect_err)?, depth);
+    }
+
+    // A `ValueList` field renders as the list it already is.
+    if is_value_list(shape) {
+        return render_list(out, peek.get::<ValueList>().map_err(reflect_err)?, depth);
     }
 
     // A `bstr::BString` field is a String tag, not a byte array. SNBT is text,
@@ -351,15 +445,48 @@ fn render_seq(out: &mut String, peek: Peek, depth: usize) -> Result<(), Error> {
         out.push(']');
     } else {
         out.push('[');
+        // SNBT lists are as homogeneous as binary ones — vanilla rejects a
+        // mixture on parse — so a `Vec<Value>` whose elements disagree is
+        // refused here, for parity with `nbt::ser::write_seq`. Text that could
+        // never be read back is not a useful thing to emit.
+        let mut elem_tag: Option<FieldType> = None;
         for (i, item) in list.iter().enumerate() {
             if i > 0 {
                 out.push(',');
+            }
+            if let Some(tag) = dynamic_tag(item)? {
+                match elem_tag {
+                    None => elem_tag = Some(tag),
+                    Some(first) if first != tag => {
+                        return Err(Error::HeterogeneousList {
+                            expected: first,
+                            found: tag,
+                        });
+                    }
+                    Some(_) => {}
+                }
             }
             render(out, item, depth + 1)?;
         }
         out.push(']');
     }
     Ok(())
+}
+
+/// The NBT tag of a list element whose tag is *not* fixed by its Rust type — a
+/// [`Value`], or an `Option` of one.
+///
+/// `None` for everything else: those elements all share one shape, so they
+/// cannot disagree and there is nothing to check.
+fn dynamic_tag(peek: Peek) -> Result<Option<FieldType>, Error> {
+    let Some(inner) = unwrap_option(peek)? else {
+        return Ok(None);
+    };
+    if !is_value(inner.shape()) {
+        return Ok(None);
+    }
+    let v: &Value = inner.get::<Value>().map_err(reflect_err)?;
+    Ok(Some(value_tag(v)))
 }
 
 fn render_struct(out: &mut String, peek: Peek, depth: usize) -> Result<(), Error> {

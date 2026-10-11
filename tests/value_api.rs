@@ -10,7 +10,7 @@
 //! No codec is involved, so this file builds without the `nbt`/`snbt` features.
 
 use bstr::BString;
-use nbtx::{Compound, FieldType, Value};
+use nbtx::{Compound, FieldType, Value, ValueList};
 
 /// One of every variant, in tag order, with a distinguishable payload.
 fn all_variants() -> Vec<Value> {
@@ -23,7 +23,7 @@ fn all_variants() -> Vec<Value> {
         Value::Double(6.0),
         Value::ByteArray(vec![7]),
         Value::String(BString::from("8")),
-        Value::List(vec![Value::Byte(9)]),
+        Value::List(ValueList::Byte(vec![9])),
         Value::Compound(Compound::from([(BString::from("k"), Value::Byte(10))])),
         Value::IntArray(vec![11]),
         Value::LongArray(vec![12]),
@@ -130,7 +130,10 @@ fn as_accessors_return_the_real_payload() {
         Some(&vec![1i64, 2])
     );
     assert_eq!(
-        Value::List(vec![Value::Byte(1)]).as_list().unwrap().len(),
+        Value::List(ValueList::Byte(vec![1]))
+            .as_list()
+            .unwrap()
+            .len(),
         1
     );
     assert_eq!(
@@ -266,12 +269,15 @@ fn partial_eq_against_slices_and_str_is_tag_aware() {
     let bytes: &[u8] = &[1, 2];
     let ints: &[i32] = &[1, 2];
     let longs: &[i64] = &[1, 2];
-    let items: &[Value] = &[Value::Byte(1)];
+    let items = ValueList::Byte(vec![1]);
 
     assert!(Value::ByteArray(vec![1, 2]) == bytes);
     assert!(Value::IntArray(vec![1, 2]) == ints);
     assert!(Value::LongArray(vec![1, 2]) == longs);
-    assert!(Value::List(vec![Value::Byte(1)]) == items);
+    assert!(Value::List(ValueList::Byte(vec![1])) == items);
+    // `&Value`/`&mut Value` compare against a bare list too.
+    let list_ref = &Value::List(ValueList::Byte(vec![1]));
+    assert!(list_ref == items);
     assert!(Value::String(BString::from("hi")) == "hi");
 
     // An `IntArray` is not a `List`, even element for element.
@@ -302,7 +308,7 @@ fn partial_eq_works_through_references() {
     let m: &mut Value = &mut owned;
     assert!(m == "hi");
 
-    let list = Value::List(vec![Value::Byte(1), Value::Byte(2)]);
+    let list = Value::List(ValueList::Byte(vec![1, 2]));
     assert!(list.as_list().unwrap().iter().all(|item| item.is_byte()));
 }
 
@@ -311,7 +317,7 @@ fn partial_eq_works_through_references() {
 #[test]
 fn value_equality_never_crosses_tags() {
     let ints = Value::IntArray(vec![1]);
-    let list = Value::List(vec![Value::Int(1)]);
+    let list = Value::List(ValueList::Int(vec![1]));
     assert_ne!(ints, list);
     assert_ne!(list, ints);
     assert_ne!(Value::Byte(0), Value::Short(0));
@@ -356,8 +362,8 @@ fn nan_equals_itself_so_value_can_be_eq() {
     // A NaN inside a container is equal too, which is what makes a whole
     // document with one in it usable as a key.
     assert_eq!(
-        Value::List(vec![Value::Float(f32::NAN)]),
-        Value::List(vec![Value::Float(f32::NAN)])
+        Value::List(ValueList::Float(vec![f32::NAN])),
+        Value::List(ValueList::Float(vec![f32::NAN]))
     );
 }
 
@@ -407,7 +413,7 @@ fn value_can_key_a_hash_map_and_a_hash_set() {
         Value::Int(1),
         Value::Long(1),
         Value::String(BString::from("a")),
-        Value::List(vec![Value::Byte(1)]),
+        Value::List(ValueList::Byte(vec![1])),
         Value::Compound(Compound::from([(BString::from("k"), Value::Int(1))])),
     ] {
         *counts.entry(v).or_default() += 1;
@@ -448,7 +454,7 @@ fn hash_digests_whole_documents_and_separates_the_tags() {
 
     let doc = Value::Compound(Compound::from([
         (BString::from("a"), Value::Int(1)),
-        (BString::from("b"), Value::List(vec![Value::Byte(2)])),
+        (BString::from("b"), Value::List(ValueList::Byte(vec![2]))),
     ]));
     assert_eq!(digest(&doc), digest(&doc.clone()));
 
@@ -488,10 +494,10 @@ fn from_conversions_all_produce_a_string_tag() {
 fn clone_is_deep() {
     let original = Value::Compound(Compound::from([(
         BString::from("l"),
-        Value::List(vec![Value::Compound(Compound::from([(
+        Value::List(ValueList::Compound(vec![Compound::from([(
             BString::from("n"),
             Value::Int(1),
-        )]))]),
+        )])])),
     )]));
     let mut copy = original.clone();
     assert_eq!(copy, original);
@@ -576,4 +582,59 @@ fn debug_output_names_the_variant_and_its_payload() {
     // A non-UTF-8 payload must still be printable, not panic.
     let raw = format!("{:?}", Value::String(BString::from(vec![0xffu8])));
     assert!(raw.starts_with("String("));
+}
+
+/// A `Compound` compares equal whatever order its entries were inserted in
+/// (the `IndexMap` backing's `==` is order-independent, and so is the
+/// `BTreeMap` one's), so the `Eq`/`Hash` contract demands the two orders hash
+/// alike as well — otherwise a document used as a `HashMap` key could go
+/// missing after a re-encode that shuffles its keys. Checked for a bare
+/// compound, one nested in a `Value::List`, and one nested in another compound.
+#[test]
+fn hash_ignores_compound_key_order_because_equality_does() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn digest(v: &Value) -> u64 {
+        let mut h = DefaultHasher::new();
+        v.hash(&mut h);
+        h.finish()
+    }
+
+    let ab = Compound::from_iter([
+        (BString::from("a"), Value::Int(1)),
+        (BString::from("b"), Value::String("x".into())),
+    ]);
+    let ba = Compound::from_iter([
+        (BString::from("b"), Value::String("x".into())),
+        (BString::from("a"), Value::Int(1)),
+    ]);
+    assert_eq!(Value::Compound(ab.clone()), Value::Compound(ba.clone()));
+    assert_eq!(
+        digest(&Value::Compound(ab.clone())),
+        digest(&Value::Compound(ba.clone()))
+    );
+
+    let in_list_ab = Value::List(ValueList::Compound(vec![ab.clone()]));
+    let in_list_ba = Value::List(ValueList::Compound(vec![ba.clone()]));
+    assert_eq!(in_list_ab, in_list_ba);
+    assert_eq!(digest(&in_list_ab), digest(&in_list_ba));
+
+    let nested_ab = Value::Compound(Compound::from_iter([(
+        BString::from("inner"),
+        Value::Compound(ab),
+    )]));
+    let nested_ba = Value::Compound(Compound::from_iter([(
+        BString::from("inner"),
+        Value::Compound(ba),
+    )]));
+    assert_eq!(nested_ab, nested_ba);
+    assert_eq!(digest(&nested_ab), digest(&nested_ba));
+
+    // Different entries still hash differently in practice.
+    let other = Value::Compound(Compound::from_iter([
+        (BString::from("a"), Value::Int(2)),
+        (BString::from("b"), Value::String("x".into())),
+    ]));
+    assert_ne!(digest(&nested_ab), digest(&other));
 }

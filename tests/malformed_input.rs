@@ -8,7 +8,7 @@
 #![cfg(feature = "nbt")]
 
 use bstr::BString;
-use nbtx::{Compound, Value, from_be_bytes, from_le_bytes, to_be_bytes};
+use nbtx::{Compound, Value, ValueList, from_be_bytes, from_le_bytes, to_be_bytes};
 
 fn hex(s: &str) -> Vec<u8> {
     let packed: String = s.split_whitespace().collect();
@@ -86,7 +86,7 @@ fn empty_list_of_tag_end_is_accepted_but_a_non_empty_one_is_not() {
     let v: Value = from_le_bytes(&mut empty.as_slice()).unwrap();
     assert_eq!(
         v,
-        compound([("a", Value::List(vec![]))]),
+        compound([("a", Value::List(ValueList::End))]),
         "an empty TAG_End list is legal"
     );
 
@@ -184,7 +184,7 @@ fn every_truncation_point_errors() {
     let full = to_be_bytes(&compound([
         ("s", Value::String(BString::from("hello"))),
         ("ia", Value::IntArray(vec![1, 2, 3])),
-        ("l", Value::List(vec![Value::Long(7)])),
+        ("l", Value::List(ValueList::Long(vec![7]))),
     ]))
     .unwrap();
     for cut in 1..full.len() {

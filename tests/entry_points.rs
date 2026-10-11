@@ -16,9 +16,9 @@
 use bstr::BString;
 use facet::Facet;
 use nbtx::{
-    BigEndian, Compound, EndiannessImpl, LittleEndian, Named, Serializer, Value, Variant,
-    VarintEndian, from_be_bytes, from_bytes, to_be_bytes, to_be_bytes_in, to_bytes, to_bytes_in,
-    to_le_bytes_in, to_varint_bytes, to_varint_bytes_in,
+    BigEndian, Compound, EndiannessImpl, LittleEndian, Named, Serializer, Value, ValueList,
+    Variant, VarintEndian, from_be_bytes, from_bytes, to_be_bytes, to_be_bytes_in, to_bytes,
+    to_bytes_in, to_le_bytes_in, to_varint_bytes, to_varint_bytes_in,
 };
 
 fn comp(entries: &[(&str, Value)]) -> Value {
@@ -74,7 +74,7 @@ fn a_reader_is_left_positioned_after_the_document_it_decoded() {
     let mut stream = Vec::new();
     to_be_bytes_in(&mut stream, &comp(&[("first", Value::Byte(1))])).unwrap();
     to_be_bytes_in(&mut stream, &Value::String("second".into())).unwrap();
-    to_be_bytes_in(&mut stream, &Value::List(vec![Value::Long(3)])).unwrap();
+    to_be_bytes_in(&mut stream, &Value::List(ValueList::Long(vec![3]))).unwrap();
     stream.extend_from_slice(b"trailing bytes that are not NBT");
 
     let mut cursor = stream.as_slice();
@@ -88,7 +88,7 @@ fn a_reader_is_left_positioned_after_the_document_it_decoded() {
     );
     assert_eq!(
         from_be_bytes::<Value>(&mut cursor).unwrap(),
-        Value::List(vec![Value::Long(3)])
+        Value::List(ValueList::Long(vec![3]))
     );
     assert_eq!(
         cursor, b"trailing bytes that are not NBT",
@@ -120,15 +120,18 @@ fn consecutive_varint_documents_decode_from_one_reader() {
 /// explicit rather than assumed either way.
 #[test]
 fn a_failed_in_write_leaves_a_partial_document_behind() {
-    // The heterogeneous list is detected only once the encoder has already
+    // The over-long string is detected only once the encoder has already
     // written the root header and the entry's tag and key.
     let doc = comp(&[
         ("ok", Value::Int(1)),
-        ("bad", Value::List(vec![Value::Byte(1), Value::Int(2)])),
+        (
+            "bad",
+            Value::String(bstr::BString::from(vec![b'x'; nbtx::MAX_STRING_LEN + 1])),
+        ),
     ]);
     let mut buf = Vec::new();
     let err = to_be_bytes_in(&mut buf, &doc).expect_err("must fail");
-    assert!(matches!(err, nbtx::Error::HeterogeneousList { .. }));
+    assert!(matches!(err, nbtx::Error::StringLengthExceeded(_)));
     assert!(
         !buf.is_empty(),
         "the encoder streams, so a failure leaves partial output"
@@ -136,6 +139,56 @@ fn a_failed_in_write_leaves_a_partial_document_behind() {
     assert!(
         from_be_bytes::<Value>(&mut buf.as_slice()).is_err(),
         "and that partial output is not a valid document"
+    );
+}
+
+/// ...but a heterogeneous list must not be *part* of that partial document.
+///
+/// A `TAG_List` header is one element-type byte plus a length: a promise of N
+/// payloads of one tag. The writer checks the whole list before emitting that
+/// header, so a mixture stops the write with nothing of the list committed —
+/// the buffer ends right after the field's tag and name, exactly where a
+/// document that simply omitted the field would have carried on.
+#[test]
+fn a_heterogeneous_list_fails_before_its_header_reaches_the_writer() {
+    // `ValueList` cannot hold a mixture, so the mixture has to be a
+    // `Vec<Value>` field — the one shape whose element tag is not fixed by its
+    // Rust type, and so the only one the writer has to check.
+    #[derive(Facet)]
+    struct Doc {
+        ok: i32,
+        bad: Vec<Value>,
+    }
+
+    let mixed = Doc {
+        ok: 1,
+        bad: vec![Value::Byte(1), Value::Short(2)],
+    };
+    let mut buf = Vec::new();
+    let err = to_be_bytes_in(&mut buf, &mixed).expect_err("a mixed Vec<Value> must be refused");
+    assert!(
+        matches!(
+            err,
+            nbtx::Error::HeterogeneousList {
+                expected: nbtx::FieldType::Byte,
+                found: nbtx::FieldType::Short,
+            }
+        ),
+        "got {err:?}"
+    );
+
+    // Everything up to and including the offending field's tag + name, and not
+    // one byte more: root header, the `ok` entry, then `09 0003 "bad"`.
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&[0x0a, 0x00, 0x00]); // root compound, empty name
+    expected.extend_from_slice(&[0x03, 0x00, 0x02]); // TAG_Int, name length 2
+    expected.extend_from_slice(b"ok");
+    expected.extend_from_slice(&1i32.to_be_bytes());
+    expected.extend_from_slice(&[0x09, 0x00, 0x03]); // TAG_List, name length 3
+    expected.extend_from_slice(b"bad");
+    assert_eq!(
+        buf, expected,
+        "the writer must stop before the list's element-type byte and length"
     );
 }
 

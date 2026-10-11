@@ -17,18 +17,30 @@ use integer_encoding::{VarIntReader, VarIntWriter};
 use crate::error::{InvalidVarint, StringLengthExceeded, UnexpectedEnd};
 use crate::nbt::mutf8;
 use crate::nbt::source::Budget;
-use crate::{EndiannessImpl, Error, FieldType, MAX_STRING_LEN, Value, Variant};
+use crate::{EndiannessImpl, Error, FieldType, MAX_STRING_LEN, Value, ValueList, Variant};
 
-/// Upper bound, in bytes, on how much capacity we speculatively reserve from an
-/// attacker-controlled wire length before any bytes are actually read. The real
-/// allocation still grows to fit genuine data; this only caps the *initial*
-/// reservation so a bogus multi-gigabyte length can't OOM the process up front.
-/// It is counted in bytes rather than elements because a `Value` is many bytes
-/// wide and nested lists each reserve their own buffer.
+/// Upper bound, **in bytes**, on how much capacity a single reservation may
+/// speculatively claim from an attacker-controlled wire length before any bytes
+/// are actually read. See [`prealloc_cap`].
 const MAX_PREALLOC_BYTES: usize = 4096;
 
-/// How many `T`s to reserve for a wire length of `len`, within [`MAX_PREALLOC_BYTES`].
-fn prealloc<T>(len: usize) -> usize {
+/// Caps a wire-supplied element count at [`MAX_PREALLOC_BYTES`] worth of `T`.
+///
+/// The real allocation still grows to fit genuine data; this only bounds the
+/// *initial* reservation, so a bogus multi-gigabyte length cannot commit the
+/// process to a huge allocation before a single payload byte has been read.
+///
+/// The cap is in bytes rather than elements because the reservations nest:
+/// `read_list` recurses before any element is read, so up to `MAX_DEPTH`
+/// frames are live at once, each holding its own `Vec`. A per-element cap would
+/// multiply by `size_of::<T>()` — 4096 `ValueList`s is 128 KiB per level, 64 MiB
+/// over a 511-deep chain, from 2.5 KiB of input. In bytes, the same chain
+/// reserves at most `MAX_DEPTH * MAX_PREALLOC_BYTES` (~2 MiB) in total,
+/// whatever the element type.
+#[inline]
+fn prealloc_cap<T>(len: usize) -> usize {
+    // `size_of::<T>()` is 0 for a ZST; `max(1)` keeps the division defined and
+    // simply leaves such a length uncapped, which costs no memory.
     len.min(MAX_PREALLOC_BYTES / size_of::<T>().max(1))
 }
 
@@ -285,12 +297,12 @@ pub(crate) fn read_seq_len<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Res
 
 /// Reads exactly `len` bytes without trusting `len` for the initial allocation.
 ///
-/// `len` comes straight off the wire, so we cap the up-front reservation at
-/// [`MAX_PREALLOC_BYTES`] and let [`Read::read_to_end`] grow the buffer to fit the
+/// `len` comes straight off the wire, so we cap the up-front reservation with
+/// [`prealloc_cap`] and let [`Read::read_to_end`] grow the buffer to fit the
 /// bytes that are actually present. A truncated stream therefore yields fewer
 /// bytes than promised and surfaces as an [`Error::UnexpectedEof`].
 fn read_exact_bounded<R: ReadBytesExt>(r: &mut R, len: usize) -> Result<Vec<u8>, Error> {
-    let mut buf = Vec::with_capacity(prealloc::<u8>(len));
+    let mut buf = Vec::with_capacity(prealloc_cap::<u8>(len));
     let read = r.take(len as u64).read_to_end(&mut buf)?;
     if read != len {
         return Err(Error::from(std::io::Error::from(
@@ -338,18 +350,17 @@ pub(crate) fn read_tag<R: ReadBytesExt>(r: &mut R) -> Result<FieldType, Error> {
     )
 }
 
-/// Maps a [`Value`] discriminant (always 1-12) to its [`FieldType`], for error
-/// reporting. Only ever called with a real `Value` discriminant, so the tag is
-/// always in range.
-fn value_tag(discriminant: u8) -> FieldType {
-    FieldType::try_from(
-        discriminant,
+/// Builds the "a `TAG_End` turned up where a value was due" error.
+///
+/// `pub(crate)` because `nbt::de` raises the same error for the same input — a
+/// non-empty list of `TAG_End` — on the derived-target path.
+pub(crate) fn unexpected_end() -> Error {
+    Error::UnexpectedEnd(UnexpectedEnd {
         #[cfg(feature = "error-context")]
-        &mut None,
+        at: String::from("unknown"),
         #[cfg(feature = "error-context")]
-        None,
-    )
-    .unwrap_or(FieldType::End)
+        index: None,
+    })
 }
 
 /// Writes the *payload* of a [`Value`] (its tag byte has already been written by
@@ -367,44 +378,144 @@ pub(crate) fn write_value<F: EndiannessImpl, W: WriteBytesExt>(
     // `write_leaf_value`. See `read_value` for why the recursive frame is kept
     // deliberately small.
     match value {
-        Value::List(items) => {
-            check_depth(depth)?;
-            // The wire format stores one element-type byte for the whole list, so
-            // every element must share the first's tag. Encoding a heterogeneous
-            // list would desync the stream (later, differently-tagged elements
-            // would be decoded against the declared element type), so reject it.
-            let elem = match items.first() {
-                // An empty list uses a `TAG_End` element type, matching Minecraft.
-                None => FieldType::End as u8,
-                Some(first) => {
-                    let expected = first.discriminant();
-                    for item in &items[1..] {
-                        if item.discriminant() != expected {
-                            return Err(Error::HeterogeneousList {
-                                expected: value_tag(expected),
-                                found: value_tag(item.discriminant()),
-                            });
-                        }
-                    }
-                    expected
-                }
-            };
-            w.write_u8(elem)?;
-            write_seq_len::<F, W>(w, items.len())?;
+        Value::List(list) => write_list::<F, W>(w, list, depth),
+        Value::Compound(map) => write_compound::<F, W>(w, map, depth),
+        leaf => write_leaf_value::<F, W>(w, leaf),
+    }
+}
+
+/// Writes a `TAG_List` payload: the element-type byte, the length, then the
+/// element payloads with no per-element tag byte.
+///
+/// The list is already typed, so there is nothing to validate and no
+/// `Value` to build per element — the payloads are written straight out of the
+/// typed vectors. `depth` counts the containers already entered and is checked
+/// before the elements are written, so one `List` costs exactly one level,
+/// unchanged from before `ValueList` existed.
+pub(crate) fn write_list<F: EndiannessImpl, W: WriteBytesExt>(
+    w: &mut W,
+    list: &ValueList,
+    depth: usize,
+) -> Result<(), Error> {
+    check_depth(depth)?;
+    w.write_u8(list.element_type() as u8)?;
+    write_seq_len::<F, W>(w, list.len())?;
+    // Only the two recursive element types live in this frame; the ten leaf
+    // ones go to an `#[inline(never)]` helper, for the reason `read_value`
+    // spells out.
+    match list {
+        ValueList::List(items) => {
             for item in items {
-                write_value::<F, W>(w, item, depth + 1)?;
+                write_list::<F, W>(w, item, depth + 1)?;
             }
         }
-        Value::Compound(map) => {
-            check_depth(depth)?;
-            for (k, v) in map {
-                w.write_u8(v.discriminant())?;
-                write_str_payload::<F, W>(w, k.as_slice())?;
-                write_value::<F, W>(w, v, depth + 1)?;
+        ValueList::Compound(items) => {
+            for item in items {
+                write_compound::<F, W>(w, item, depth + 1)?;
             }
-            w.write_u8(FieldType::End as u8)?;
         }
-        leaf => write_leaf_value::<F, W>(w, leaf)?,
+        leaf => write_leaf_list::<F, W>(w, leaf)?,
+    }
+    Ok(())
+}
+
+/// Writes a compound *body*: `<tag><key><payload>` per entry, then a `TAG_End`.
+fn write_compound<F: EndiannessImpl, W: WriteBytesExt>(
+    w: &mut W,
+    map: &Compound,
+    depth: usize,
+) -> Result<(), Error> {
+    check_depth(depth)?;
+    for (k, v) in map {
+        w.write_u8(v.discriminant())?;
+        write_str_payload::<F, W>(w, k.as_slice())?;
+        // Dispatch to the nested container directly instead of bouncing through
+        // `write_value`, so a deep document costs one frame per level.
+        match v {
+            Value::List(list) => write_list::<F, W>(w, list, depth + 1)?,
+            Value::Compound(inner) => write_compound::<F, W>(w, inner, depth + 1)?,
+            leaf => write_leaf_value::<F, W>(w, leaf)?,
+        }
+    }
+    w.write_u8(FieldType::End as u8)?;
+    Ok(())
+}
+
+/// Writes the elements of a list whose element type is not itself a container.
+/// Split out of [`write_list`] (and never inlined) to keep that recursive frame
+/// small.
+#[inline(never)]
+fn write_leaf_list<F: EndiannessImpl, W: WriteBytesExt>(
+    w: &mut W,
+    list: &ValueList,
+) -> Result<(), Error> {
+    match list {
+        // The empty list: the element-type byte and the zero length are the
+        // whole encoding.
+        ValueList::End => {}
+        ValueList::Byte(items) => {
+            for &v in items {
+                w.write_i8(v)?;
+            }
+        }
+        ValueList::Short(items) => {
+            for &v in items {
+                write_i16::<F, W>(w, v)?;
+            }
+        }
+        ValueList::Int(items) => {
+            for &v in items {
+                write_i32::<F, W>(w, v)?;
+            }
+        }
+        ValueList::Long(items) => {
+            for &v in items {
+                write_i64::<F, W>(w, v)?;
+            }
+        }
+        ValueList::Float(items) => {
+            for &v in items {
+                write_f32::<F, W>(w, v)?;
+            }
+        }
+        ValueList::Double(items) => {
+            for &v in items {
+                write_f64::<F, W>(w, v)?;
+            }
+        }
+        ValueList::ByteArray(items) => {
+            for bytes in items {
+                write_seq_len::<F, W>(w, bytes.len())?;
+                w.write_all(bytes)?;
+            }
+        }
+        ValueList::String(items) => {
+            for s in items {
+                write_str_payload::<F, W>(w, s.as_slice())?;
+            }
+        }
+        ValueList::IntArray(items) => {
+            for ints in items {
+                write_seq_len::<F, W>(w, ints.len())?;
+                for &i in ints {
+                    write_i32::<F, W>(w, i)?;
+                }
+            }
+        }
+        ValueList::LongArray(items) => {
+            for longs in items {
+                write_seq_len::<F, W>(w, longs.len())?;
+                for &l in longs {
+                    write_i64::<F, W>(w, l)?;
+                }
+            }
+        }
+        // Unreachable: `write_list` handles the two recursive element types.
+        ValueList::List(_) | ValueList::Compound(_) => {
+            return Err(Error::Other(String::from(
+                "internal error: recursive list routed to the leaf writer",
+            )));
+        }
     }
     Ok(())
 }
@@ -469,19 +580,128 @@ pub(crate) fn read_value<F: EndiannessImpl, R: Budget>(
     // reaching `MAX_DEPTH`.
     r.charge()?;
     Ok(match ty {
-        FieldType::List => {
-            r.enter(depth)?;
-            let elem = read_tag(r)?;
-            let len = read_seq_len::<F, R>(r)? as usize;
-            let mut out = Vec::with_capacity(prealloc::<Value>(len));
-            for _ in 0..len {
-                out.push(read_value::<F, R>(r, elem, depth + 1)?);
-            }
-            Value::List(out)
-        }
+        FieldType::List => Value::List(read_list::<F, R>(r, depth)?),
         FieldType::Compound => Value::Compound(read_compound::<F, R>(r, depth)?),
         leaf => read_leaf_value::<F, R>(r, leaf)?,
     })
+}
+
+/// Reads a `TAG_List` body — element-type byte, length, then that many payloads
+/// of that one type — into a typed [`ValueList`].
+///
+/// # `TAG_End` element type
+///
+/// Legal at length 0 only, and that is [`ValueList::End`]: the empty list that
+/// names no element type. A *non-empty* `End` list has no payloads to read and
+/// is rejected as [`Error::UnexpectedEnd`], matching pmmp/NBT ("Unexpected
+/// non-empty list of `TAG_End`") and gophertunnel's `UnexpectedTagError`.
+///
+/// `depth` is checked once, before any element is read, so one `List` costs
+/// exactly one level whatever it holds.
+pub(crate) fn read_list<F: EndiannessImpl, R: Budget>(
+    r: &mut R,
+    depth: usize,
+) -> Result<ValueList, Error> {
+    r.enter(depth)?;
+    let elem = read_tag(r)?;
+    let len = read_seq_len::<F, R>(r)? as usize;
+    r.charge_n(len)?;
+    // Only the two recursive element types live in this frame; see `read_value`.
+    Ok(match elem {
+        FieldType::End => {
+            if len != 0 {
+                return Err(unexpected_end());
+            }
+            ValueList::End
+        }
+        FieldType::List => {
+            let mut out = Vec::with_capacity(prealloc_cap::<ValueList>(len));
+            for _ in 0..len {
+                out.push(read_list::<F, R>(r, depth + 1)?);
+            }
+            ValueList::List(out)
+        }
+        FieldType::Compound => {
+            let mut out = Vec::with_capacity(prealloc_cap::<Compound>(len));
+            for _ in 0..len {
+                out.push(read_compound::<F, R>(r, depth + 1)?);
+            }
+            ValueList::Compound(out)
+        }
+        leaf => read_leaf_list::<F, R>(r, leaf, len)?,
+    })
+}
+
+/// Reads the elements of a list whose element type is not itself a container.
+/// Split out of [`read_list`] (and never inlined) so that recursive frame stays
+/// small; every loop caps its up-front reservation with [`prealloc_cap`], since
+/// `len` came straight off the wire.
+#[inline(never)]
+fn read_leaf_list<F: EndiannessImpl, R: Budget>(
+    r: &mut R,
+    elem: FieldType,
+    len: usize,
+) -> Result<ValueList, Error> {
+    /// Reads `len` elements of type `$elem` with `$read`, into the
+    /// `ValueList::$variant` they belong to. `$elem` is spelled out so the
+    /// up-front reservation can be capped by its *size*, not by a count.
+    macro_rules! collect {
+        ($variant:ident, $elem:ty, $read:expr) => {{
+            let mut out: Vec<$elem> = Vec::with_capacity(prealloc_cap::<$elem>(len));
+            for _ in 0..len {
+                out.push($read?);
+            }
+            ValueList::$variant(out)
+        }};
+    }
+    Ok(match elem {
+        FieldType::Byte => collect!(Byte, i8, read_i8(r)),
+        FieldType::Short => collect!(Short, i16, read_i16::<F, R>(r)),
+        FieldType::Int => collect!(Int, i32, read_i32::<F, R>(r)),
+        FieldType::Long => collect!(Long, i64, read_i64::<F, R>(r)),
+        FieldType::Float => collect!(Float, f32, read_f32::<F, R>(r)),
+        FieldType::Double => collect!(Double, f64, read_f64::<F, R>(r)),
+        FieldType::ByteArray => collect!(ByteArray, Vec<u8>, read_byte_array::<F, R>(r)),
+        FieldType::String => collect!(
+            String,
+            bstr::BString,
+            read_str_payload::<F, R>(r).map(bstr::BString::from)
+        ),
+        FieldType::IntArray => collect!(IntArray, Vec<i32>, read_int_array::<F, R>(r)),
+        FieldType::LongArray => collect!(LongArray, Vec<i64>, read_long_array::<F, R>(r)),
+        // Unreachable: `read_list` handles `End` and the two recursive tags.
+        FieldType::End | FieldType::List | FieldType::Compound => {
+            return Err(Error::Other(String::from(
+                "internal error: recursive tag routed to the leaf list reader",
+            )));
+        }
+    })
+}
+
+/// Reads a `ByteArray` payload (length prefix + that many bytes).
+fn read_byte_array<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Result<Vec<u8>, Error> {
+    let len = read_seq_len::<F, R>(r)? as usize;
+    read_exact_bounded(r, len)
+}
+
+/// Reads an `IntArray` payload (length prefix + that many ints).
+fn read_int_array<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Result<Vec<i32>, Error> {
+    let len = read_seq_len::<F, R>(r)? as usize;
+    let mut out = Vec::with_capacity(prealloc_cap::<i32>(len));
+    for _ in 0..len {
+        out.push(read_i32::<F, R>(r)?);
+    }
+    Ok(out)
+}
+
+/// Reads a `LongArray` payload (length prefix + that many longs).
+fn read_long_array<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Result<Vec<i64>, Error> {
+    let len = read_seq_len::<F, R>(r)? as usize;
+    let mut out = Vec::with_capacity(prealloc_cap::<i64>(len));
+    for _ in 0..len {
+        out.push(read_i64::<F, R>(r)?);
+    }
+    Ok(out)
 }
 
 /// Reads the payload of a non-recursive tag. Split out of [`read_value`] so the
@@ -490,41 +710,17 @@ pub(crate) fn read_value<F: EndiannessImpl, R: Budget>(
 #[inline(never)]
 fn read_leaf_value<F: EndiannessImpl, R: Budget>(r: &mut R, ty: FieldType) -> Result<Value, Error> {
     Ok(match ty {
-        FieldType::End => {
-            return Err(Error::UnexpectedEnd(UnexpectedEnd {
-                #[cfg(feature = "error-context")]
-                at: String::from("unknown"),
-                #[cfg(feature = "error-context")]
-                index: None,
-            }));
-        }
+        FieldType::End => return Err(unexpected_end()),
         FieldType::Byte => Value::Byte(read_i8(r)?),
         FieldType::Short => Value::Short(read_i16::<F, R>(r)?),
         FieldType::Int => Value::Int(read_i32::<F, R>(r)?),
         FieldType::Long => Value::Long(read_i64::<F, R>(r)?),
         FieldType::Float => Value::Float(read_f32::<F, R>(r)?),
         FieldType::Double => Value::Double(read_f64::<F, R>(r)?),
-        FieldType::ByteArray => {
-            let len = read_seq_len::<F, R>(r)? as usize;
-            Value::ByteArray(read_exact_bounded(r, len)?)
-        }
+        FieldType::ByteArray => Value::ByteArray(read_byte_array::<F, R>(r)?),
         FieldType::String => Value::String(bstr::BString::from(read_str_payload::<F, R>(r)?)),
-        FieldType::IntArray => {
-            let len = read_seq_len::<F, R>(r)? as usize;
-            let mut out = Vec::with_capacity(prealloc::<i32>(len));
-            for _ in 0..len {
-                out.push(read_i32::<F, R>(r)?);
-            }
-            Value::IntArray(out)
-        }
-        FieldType::LongArray => {
-            let len = read_seq_len::<F, R>(r)? as usize;
-            let mut out = Vec::with_capacity(prealloc::<i64>(len));
-            for _ in 0..len {
-                out.push(read_i64::<F, R>(r)?);
-            }
-            Value::LongArray(out)
-        }
+        FieldType::IntArray => Value::IntArray(read_int_array::<F, R>(r)?),
+        FieldType::LongArray => Value::LongArray(read_long_array::<F, R>(r)?),
         // Unreachable: `read_value` handles the two recursive tags itself.
         FieldType::List | FieldType::Compound => {
             return Err(Error::Other(String::from(
@@ -563,11 +759,11 @@ pub(crate) fn read_compound<F: EndiannessImpl, R: Budget>(
         // bouncing through `read_value`. A chain of nested compounds is the
         // cheapest deep document an attacker can send, and this halves the
         // number of stack frames it costs (one per level instead of two).
-        let value = if ty == FieldType::Compound {
-            r.charge()?;
-            Value::Compound(read_compound::<F, R>(r, depth + 1)?)
-        } else {
-            read_value::<F, R>(r, ty, depth + 1)?
+        r.charge()?;
+        let value = match ty {
+            FieldType::Compound => Value::Compound(read_compound::<F, R>(r, depth + 1)?),
+            FieldType::List => Value::List(read_list::<F, R>(r, depth + 1)?),
+            leaf => read_leaf_value::<F, R>(r, leaf)?,
         };
         // First occurrence wins. `entry`/`or_insert` behaves identically on both
         // `Compound` backings (`IndexMap` under `preserve_order`, `BTreeMap`

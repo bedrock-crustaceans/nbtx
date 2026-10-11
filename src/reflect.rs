@@ -13,14 +13,14 @@
 //! available with no features at all, and it needs the same rules.
 
 use facet::Facet;
-use facet_core::{Def, Field, ScalarType, Shape, Variant};
+use facet_core::{Def, Field, ScalarType, Shape, Type, UserType, Variant};
 use facet_reflect::{Partial, Peek};
 
 use crate::error::{
     DiscriminantOutOfRange, InvalidLenientWidth, LenientWidthOutOfRange, MissingVariantAs,
     UnexpectedType, UnknownField, Unsupported,
 };
-use crate::{Error, FieldType, Value};
+use crate::{Error, FieldType, Value, ValueList};
 
 /// Wraps a `facet_reflect` failure, which only reports as a `Display` string.
 pub(crate) fn reflect_err(e: impl std::fmt::Display) -> Error {
@@ -67,6 +67,16 @@ pub(crate) fn unknown_field(shape: &Shape, key: &[u8]) -> Error {
 /// exactly, and a user type that merely looks like it is unaffected.
 pub(crate) fn is_value(shape: &Shape) -> bool {
     shape.id == <Value as Facet>::SHAPE.id
+}
+
+/// Returns `true` if the shape is the typed list payload [`ValueList`].
+///
+/// Matched by `Shape::id`, exactly as [`is_value`] is. A `ValueList` field in a
+/// `#[derive(Facet)]` struct is a `TAG_List` field read and written verbatim by
+/// every codec: it already *is* the wire form of a list, tags and all, so
+/// reflecting through it would only lose the element type of an empty one.
+pub(crate) fn is_value_list(shape: &Shape) -> bool {
+    shape.id == <ValueList as Facet>::SHAPE.id
 }
 
 /// Returns `true` if the shape is `bstr::BString`/`BStr`.
@@ -116,6 +126,46 @@ pub(crate) fn scalar_tag(scalar: ScalarType) -> Option<FieldType> {
         ScalarType::Str | ScalarType::String | ScalarType::CowStr => FieldType::String,
         _ => return None,
     })
+}
+
+/// Maps a *static* shape to its NBT tag, without a concrete value.
+///
+/// `None` for a shape whose tag only a value can answer — a dynamic [`Value`],
+/// or an `Option` of one. The one place that matters is the element type of an
+/// **empty** list, which has no element to ask: every codec falls back to
+/// `TAG_End` there, and they have to agree, or `to_value` and `to_bytes` would
+/// disagree about what an empty `Vec<String>` is.
+pub(crate) fn tag_of_shape(shape: &Shape) -> Option<FieldType> {
+    if is_value(shape) {
+        return None;
+    }
+    // A `ValueList` field *is* a list, whatever it happens to hold, so unlike a
+    // `Value` its tag is known statically.
+    if is_value_list(shape) {
+        return Some(FieldType::List);
+    }
+    if is_bstring(shape) {
+        return Some(FieldType::String);
+    }
+    if let Some(scalar) = ScalarType::try_from_shape(shape) {
+        return scalar_tag(scalar);
+    }
+    match shape.def {
+        Def::List(def) => Some(list_tag(def.t())),
+        Def::Array(def) => Some(list_tag(def.t())),
+        Def::Slice(def) => Some(list_tag(def.t())),
+        Def::Map(_) => Some(FieldType::Compound),
+        Def::Option(def) => tag_of_shape(def.t()),
+        _ => match shape.ty {
+            Type::User(UserType::Struct(_)) => Some(FieldType::Compound),
+            // An enum's tag follows from its declared `variant_as` mode alone.
+            // A missing/invalid one is not reported here — this is the
+            // best-effort path for the element type of an *empty* list, and the
+            // real error surfaces the moment a value is written.
+            Type::User(UserType::Enum(_)) => enum_tag(shape).ok(),
+            _ => None,
+        },
+    }
 }
 
 /// Maps a list/array element shape to the tag of the *containing* sequence.
@@ -288,11 +338,8 @@ pub(crate) enum EnumWire {
 ///
 /// Needs no value, so it also answers for the element type of an empty list.
 ///
-/// Only the binary codec's `tag_of`/`tag_of_shape` (`nbt::ser`) need a tag
-/// ahead of a value: the SNBT writer and the `Value` conversion both go
-/// through [`enum_wire`] instead, which already has a `Peek` in hand. Gated on
-/// `nbt` so it is not dead code when that feature is off.
-#[cfg(feature = "nbt")]
+/// Used by [`tag_of_shape`] and by the binary codec's `tag_of`; the SNBT writer
+/// goes through [`enum_wire`] instead, which already has a `Peek` in hand.
 pub(crate) fn enum_tag(shape: &Shape) -> Result<FieldType, Error> {
     Ok(VariantAs::of(shape)?.tag())
 }

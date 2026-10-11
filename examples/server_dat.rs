@@ -111,9 +111,9 @@ fn describe(value: &Value, indent: usize) {
         Value::List(items) => {
             // Only the first element is expanded: every element of a list shares
             // one tag, so the rest have the same shape by construction.
-            if let Some(first) = items.first() {
-                println!("{pad}[0] ({})", summary(first));
-                describe(first, indent + 1);
+            if let Some(first) = items.get(0) {
+                println!("{pad}[0] ({})", summary(&first));
+                describe(&first, indent + 1);
                 if items.len() > 1 {
                     println!("{pad}[1..{}] same shape", items.len());
                 }

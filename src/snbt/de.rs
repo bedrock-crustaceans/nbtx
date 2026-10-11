@@ -8,6 +8,12 @@
 //! addition to plain `[..]` lists. A bare token only becomes a number when it
 //! really parses as one — `sand` is a string, not a malformed byte.
 //!
+//! A `[..]` list parses into a [`ValueList`]: the first element fixes the
+//! element type and a later element of a different type is an
+//! [`Error::HeterogeneousList`], which is what vanilla Minecraft's own parser
+//! does. Only the outer type has to agree, so `[[1b],["x"],[]]` is a perfectly
+//! good list of lists.
+//!
 //! Struct targets follow the binary codec's rules: a compound key that matches
 //! no field is an [`Error::UnknownField`] unless the struct carries
 //! `#[facet(nbtx::allow_unknown_fields)]`. Enum targets do too: the mandatory
@@ -42,10 +48,11 @@ use facet_reflect::Partial;
 use crate::error::{ParseFloatError, ParseIntError, UnexpectedEof, UnexpectedSymbol};
 // Shared with the binary codec and the `Value` conversion; see `crate::reflect`.
 use crate::reflect::{
-    Lenient, VariantAs, WireScalar, is_bstring, is_value, lenient_discriminant, reflect_err,
-    set_lenient, set_wire, unknown_field, unsupported, wire_scalar,
+    Lenient, VariantAs, WireScalar, is_bstring, is_value, is_value_list, lenient_discriminant,
+    reflect_err, set_lenient, set_wire, unexpected_type, unknown_field, unsupported, value_tag,
+    wire_scalar,
 };
-use crate::{Error, FieldType, Value, check_depth};
+use crate::{Error, FieldType, Value, ValueList, check_depth};
 
 type Part<'f> = Partial<'f, true>;
 
@@ -332,9 +339,18 @@ impl<'a> Deserializer<'a> {
     }
 
     /// Parses a plain `[..]` list. Recursive; see [`Self::parse_compound_value`].
+    ///
+    /// The first element fixes the list's element type and every later one must
+    /// match it, or the result is [`Error::HeterogeneousList`] — vanilla
+    /// Minecraft's parser rejects a mixture too, and there would be no way to
+    /// encode one. An empty `[]` has no element type to recover and becomes
+    /// [`ValueList::End`].
+    ///
+    /// The *inner* element types of a list of lists are independent:
+    /// `[[1b],["x"],[]]` is fine, because all three elements are `List`s.
     fn parse_list_value(&mut self, depth: usize) -> Result<Value, Error> {
         self.open_container('[', depth)?;
-        let mut out = Vec::new();
+        let mut out = ValueList::End;
         loop {
             if self.consume_if(']')? {
                 break;
@@ -344,7 +360,9 @@ impl<'a> Deserializer<'a> {
                 Some(Nested::List) => self.parse_list_value(depth + 1)?,
                 None => self.parse_leaf_value()?,
             };
-            out.push(item);
+            // `push` adopts the element type on the first element and rejects a
+            // mismatch on every later one.
+            out.push(item)?;
             if !self.element_sep(']')? {
                 break;
             }
@@ -437,6 +455,15 @@ impl<'a> Deserializer<'a> {
         if is_value(shape) {
             let v = self.parse_value(depth)?;
             return p.set(v).map_err(reflect_err);
+        }
+
+        // A `ValueList` field takes a `[..]` list node verbatim — and only that:
+        // a `[B;..]` literal is a byte array, not a list.
+        if is_value_list(shape) {
+            return match self.parse_value(depth)? {
+                Value::List(list) => p.set(list).map_err(reflect_err),
+                other => Err(unexpected_type(FieldType::List, value_tag(&other))),
+            };
         }
 
         if let Def::Option(def) = shape.def {

@@ -4,7 +4,9 @@
 //! the target type. The NBT tag drives how bytes are read; the *target* Rust
 //! type drives how they are stored:
 //!
-//! * A dynamic [`Value`] target captures the exact tag of every node.
+//! * A dynamic [`Value`] target captures the exact tag of every node, and a
+//!   [`ValueList`](crate::ValueList) target captures a `TAG_List` with its
+//!   element type — an empty one included.
 //! * A `#[derive(Facet)]` struct matches NBT keys against field names
 //!   (`#[facet(rename = "...")]`-aware); an unknown key is an error unless the
 //!   struct opts out with `#[facet(nbtx::allow_unknown_fields)]`, and missing
@@ -37,8 +39,8 @@ use crate::nbt::io;
 use crate::nbt::source::{Budget, Source};
 // Shared with the SNBT codec and the `Value` conversion; see `crate::reflect`.
 use crate::reflect::{
-    Lenient, VariantAs, WireScalar, is_bstring, is_value, lenient_discriminant, reflect_err,
-    scalar_tag, set_lenient, unexpected_type, unknown_field, unsupported,
+    Lenient, VariantAs, WireScalar, is_bstring, is_value, is_value_list, lenient_discriminant,
+    reflect_err, scalar_tag, set_lenient, unexpected_type, unknown_field, unsupported,
 };
 use crate::{
     BigEndian, DecodeOptions, EndiannessImpl, Error, FieldType, LittleEndian, VarintEndian,
@@ -78,6 +80,11 @@ fn read_into<'f, F: EndiannessImpl, R: Budget>(
     }
     r.charge()?;
 
+    // A `ValueList` target takes a `TAG_List` verbatim — and only a `TAG_List`.
+    if is_value_list(shape) {
+        return read_value_list_leaf::<F, R>(p, tag, r, depth);
+    }
+
     // Option: the key was present, so this is `Some`.
     if let Def::Option(def) = shape.def {
         let p = p.begin_some().map_err(reflect_err)?;
@@ -115,6 +122,23 @@ fn read_value_leaf<'f, F: EndiannessImpl, R: Budget>(
 ) -> Result<Part<'f>, Error> {
     let v = io::read_value::<F, R>(r, tag, depth)?;
     p.set(v).map_err(reflect_err)
+}
+
+/// Reads a `TAG_List` into a [`ValueList`] target, keeping its element type
+/// exactly as it arrived (an empty typed list included). Split out of
+/// [`read_into`] for the same reason [`read_value_leaf`] is.
+#[inline(never)]
+fn read_value_list_leaf<'f, F: EndiannessImpl, R: Budget>(
+    p: Part<'f>,
+    tag: FieldType,
+    r: &mut R,
+    depth: usize,
+) -> Result<Part<'f>, Error> {
+    if tag != FieldType::List {
+        return Err(unexpected_type(FieldType::List, tag));
+    }
+    let list = io::read_list::<F, R>(r, depth)?;
+    p.set(list).map_err(reflect_err)
 }
 
 /// All the non-recursive target types. Split out of [`read_into`] to keep the
@@ -288,6 +312,9 @@ fn read_scalar<'f, F: EndiannessImpl, R: Budget>(
 /// Normalises a sequence tag into `(element tag, length)`; a `List` carries its
 /// own element type, the typed arrays imply theirs. Split out of [`read_seq`] to
 /// keep that recursive frame small.
+///
+/// A non-empty list of `TAG_End` is rejected here as [`Error::UnexpectedEnd`],
+/// whatever the target type — see the comment inside.
 #[inline(never)]
 fn read_seq_header<F: EndiannessImpl, R: Budget>(
     tag: FieldType,
@@ -297,6 +324,15 @@ fn read_seq_header<F: EndiannessImpl, R: Budget>(
         FieldType::List => {
             let elem_tag = io::read_tag(r)?;
             let len = io::read_seq_len::<F, R>(r)? as usize;
+            // `TAG_End` is a legal element type only for the empty list. A
+            // non-empty one has no payloads to read at all, so it is rejected
+            // here rather than being handed down as an element tag that would
+            // surface as whatever mismatch the *target* type happens to notice
+            // first. `io::read_list` raises the identical error on the
+            // `Value`/`ValueList` path; every target now agrees.
+            if elem_tag == FieldType::End && len != 0 {
+                return Err(io::unexpected_end());
+            }
             (elem_tag, len)
         }
         FieldType::ByteArray => (FieldType::Byte, io::read_seq_len::<F, R>(r)? as usize),

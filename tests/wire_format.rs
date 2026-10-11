@@ -18,8 +18,8 @@
 
 use bstr::BString;
 use nbtx::{
-    Compound, Value, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes, to_le_bytes,
-    to_varint_bytes,
+    Compound, Value, ValueList, from_be_bytes, from_le_bytes, from_varint_bytes, to_be_bytes,
+    to_le_bytes, to_varint_bytes,
 };
 
 /// Parses a hex string into bytes. Whitespace is ignored, so vectors may be
@@ -33,13 +33,18 @@ fn hex(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// Builds a `Value::Compound` in the given key order.
-fn comp(entries: &[(&str, Value)]) -> Value {
+/// Builds a [`Compound`] in the given key order.
+fn map(entries: &[(&str, Value)]) -> Compound {
     let mut m = Compound::new();
     for (k, v) in entries {
         m.insert(BString::from(*k), v.clone());
     }
-    Value::Compound(m)
+    m
+}
+
+/// Builds a `Value::Compound` in the given key order.
+fn comp(entries: &[(&str, Value)]) -> Value {
+    Value::Compound(map(entries))
 }
 
 /// Asserts `value` encodes to exactly `be`/`le`/`var` in the three variants, and
@@ -277,7 +282,7 @@ fn list_of_shorts_encodes_exactly() {
     // no per-element tag or name.
     assert_vector(
         "list_short",
-        &Value::List(vec![Value::Short(1), Value::Short(2), Value::Short(3)]),
+        &Value::List(ValueList::Short(vec![1, 2, 3])),
         "09 00 00 02 00 00 00 03 00 01 00 02 00 03",
         "09 00 00 02 03 00 00 00 01 00 02 00 03 00",
         "09 00 02 06 01 00 02 00 03 00", // elem=02, len zigzag(3)=06
@@ -288,7 +293,7 @@ fn list_of_shorts_encodes_exactly() {
 fn empty_list_encodes_a_tag_end_element_type() {
     assert_vector(
         "list_empty",
-        &Value::List(vec![]),
+        &Value::List(ValueList::End),
         "09 00 00 00 00 00 00 00",
         "09 00 00 00 00 00 00 00",
         "09 00 00 00",
@@ -299,7 +304,10 @@ fn empty_list_encodes_a_tag_end_element_type() {
 fn list_of_strings_encodes_exactly() {
     assert_vector(
         "list_string",
-        &Value::List(vec![Value::from("a"), Value::from("bb")]),
+        &Value::List(ValueList::String(vec![
+            BString::from("a"),
+            BString::from("bb"),
+        ])),
         "09 00 00 08 00 00 00 02 00 01 61 00 02 62 62",
         "09 00 00 08 02 00 00 00 01 00 61 02 00 62 62",
         "09 00 08 04 01 61 02 62 62",
@@ -310,7 +318,7 @@ fn list_of_strings_encodes_exactly() {
 fn list_of_compounds_encodes_exactly() {
     assert_vector(
         "list_compound",
-        &Value::List(vec![comp(&[("k", Value::Byte(1))])]),
+        &Value::List(ValueList::Compound(vec![map(&[("k", Value::Byte(1))])])),
         "09 00 00 0a 00 00 00 01 01 00 01 6b 01 00",
         "09 00 00 0a 01 00 00 00 01 01 00 6b 01 00",
         "09 00 0a 02 01 01 6b 01 00",
@@ -386,7 +394,7 @@ fn mixed_tag_compound_decodes_and_reencodes() {
         ("ba", Value::ByteArray(vec![9, 8])),
         ("ia", Value::IntArray(vec![-5])),
         ("la", Value::LongArray(vec![7])),
-        ("li", Value::List(vec![Value::Short(1), Value::Short(2)])),
+        ("li", Value::List(ValueList::Short(vec![1, 2]))),
         ("s", Value::from("ok")),
     ]);
     assert_vector(
@@ -540,14 +548,14 @@ fn typed_arrays_encode_exactly() {
 fn int_array_and_list_of_int_are_distinct_tags() {
     assert_vector(
         "List<Int> [-1,300]",
-        &comp(&[("a", Value::List(vec![Value::Int(-1), Value::Int(300)]))]),
+        &comp(&[("a", Value::List(ValueList::Int(vec![-1, 300])))]),
         "0a0000090001610300000002ffffffff0000012c00",
         "0a0000090100610302000000ffffffff2c01000000",
         "0a00090161030401d80400",
     );
     assert_vector(
         "List<Long> [-1,300]",
-        &comp(&[("a", Value::List(vec![Value::Long(-1), Value::Long(300)]))]),
+        &comp(&[("a", Value::List(ValueList::Long(vec![-1, 300])))]),
         "0a0000090001610400000002ffffffffffffffff000000000000012c00",
         "0a0000090100610402000000ffffffffffffffff2c0100000000000000",
         "0a00090161040401d80400",
@@ -556,11 +564,7 @@ fn int_array_and_list_of_int_are_distinct_tags() {
     // The IntArray payload after the tag byte is byte-identical to the
     // List<Int> payload after the element-type byte — only the tag differs.
     let ia = to_be_bytes(&comp(&[("a", Value::IntArray(vec![-1, 300]))])).unwrap();
-    let li = to_be_bytes(&comp(&[(
-        "a",
-        Value::List(vec![Value::Int(-1), Value::Int(300)]),
-    )]))
-    .unwrap();
+    let li = to_be_bytes(&comp(&[("a", Value::List(ValueList::Int(vec![-1, 300])))])).unwrap();
     assert_eq!(ia[3], 0x0b, "IntArray must use tag 11");
     assert_eq!(li[3], 0x09, "List must use tag 9");
     assert_eq!(li[7], 0x03, "List<Int> element type must be tag 3");
@@ -571,7 +575,7 @@ fn int_array_and_list_of_int_are_distinct_tags() {
 fn lists_encode_exactly() {
     assert_vector(
         "List<Short> [1,2]",
-        &comp(&[("a", Value::List(vec![Value::Short(1), Value::Short(2)]))]),
+        &comp(&[("a", Value::List(ValueList::Short(vec![1, 2])))]),
         "0a00000900016102000000020001000200",
         "0a00000901006102020000000100020000",
         "0a0009016102040100020000",
@@ -580,7 +584,7 @@ fn lists_encode_exactly() {
         "List<String> [x,yy]",
         &comp(&[(
             "a",
-            Value::List(vec![Value::String("x".into()), Value::String("yy".into())]),
+            Value::List(ValueList::String(vec!["x".into(), "yy".into()])),
         )]),
         "0a00000900016108000000020001780002797900",
         "0a00000901006108020000000100780200797900",
@@ -588,17 +592,17 @@ fn lists_encode_exactly() {
     );
     assert_vector(
         "List<Byte> [1,2,3]",
-        &comp(&[(
-            "a",
-            Value::List(vec![Value::Byte(1), Value::Byte(2), Value::Byte(3)]),
-        )]),
+        &comp(&[("a", Value::List(ValueList::Byte(vec![1, 2, 3])))]),
         "0a000009000161010000000301020300",
         "0a000009010061010300000001020300",
         "0a00090161010601020300",
     );
     assert_vector(
         "List<Compound> [{b:7b}]",
-        &comp(&[("a", Value::List(vec![comp(&[("b", Value::Byte(7))])]))]),
+        &comp(&[(
+            "a",
+            Value::List(ValueList::Compound(vec![map(&[("b", Value::Byte(7))])])),
+        )]),
         "0a0000090001610a0000000101000162070000",
         "0a0000090100610a0100000001010062070000",
         "0a000901610a02010162070000",
@@ -611,7 +615,7 @@ fn lists_encode_exactly() {
 fn empty_list_element_type_is_tag_end() {
     assert_vector(
         "List []",
-        &comp(&[("a", Value::List(vec![]))]),
+        &comp(&[("a", Value::List(ValueList::End))]),
         "0a000009000161000000000000",
         "0a000009010061000000000000",
         "0a00090161000000",

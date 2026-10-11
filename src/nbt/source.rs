@@ -57,7 +57,12 @@ pub(crate) trait Budget: Read {
     fn enter(&mut self, depth: usize) -> Result<(), Error>;
 
     /// Counts one decoded value against the node budget.
-    fn charge(&mut self) -> Result<(), Error>;
+    fn charge(&mut self) -> Result<(), Error> {
+        self.charge_n(1)
+    }
+
+    /// Counts `n` decoded values against the node budget before they are read.
+    fn charge_n(&mut self, n: usize) -> Result<(), Error>;
 }
 
 impl<R: Read> Budget for Source<R> {
@@ -68,13 +73,13 @@ impl<R: Read> Budget for Source<R> {
         Ok(())
     }
 
-    fn charge(&mut self) -> Result<(), Error> {
-        if self.nodes_left == 0 {
+    fn charge_n(&mut self, n: usize) -> Result<(), Error> {
+        if n > self.nodes_left {
             return Err(Error::NodeCountExceeded {
                 max: self.options.max_nodes,
             });
         }
-        self.nodes_left -= 1;
+        self.nodes_left -= n;
         Ok(())
     }
 }

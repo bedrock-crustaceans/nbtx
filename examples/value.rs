@@ -9,7 +9,7 @@
 //! `examples/structs.rs`.
 
 use bstr::{BStr, BString};
-use nbtx::{Compound, Value};
+use nbtx::{Compound, Value, ValueList};
 
 fn main() -> Result<(), nbtx::Error> {
     // `Compound` is a type alias, so this code is identical whether the crate
@@ -28,10 +28,7 @@ fn main() -> Result<(), nbtx::Error> {
     root.insert("double".into(), Value::Double(2.25));
     root.insert("byte_array".into(), Value::ByteArray(vec![0xde, 0xad]));
     root.insert("string".into(), Value::String(BString::from("hello")));
-    root.insert(
-        "list".into(),
-        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
-    );
+    root.insert("list".into(), Value::List(ValueList::Int(vec![1, 2, 3])));
     root.insert(
         "compound".into(),
         Value::Compound(Compound::from_iter([
@@ -131,9 +128,10 @@ fn main() -> Result<(), nbtx::Error> {
     // A `List` carries a single element-type byte for the whole list, so a
     // heterogeneous one cannot be written. nbtx rejects it up front rather than
     // emitting a stream that would decode into different data.
-    let mixed = Value::List(vec![Value::Int(1), Value::String("two".into())]);
-    match nbtx::to_be_bytes(&mixed) {
-        Ok(_) => unreachable!("a heterogeneous list must not encode"),
+    // `Value::List` holds a `ValueList`, so the refusal happens where the list
+    // is built rather than on the way out — the bad document never exists.
+    match ValueList::try_from(vec![Value::Int(1), Value::String("two".into())]) {
+        Ok(_) => unreachable!("a heterogeneous list must not be constructible"),
         Err(err) => println!("\nlists must be homogeneous: {err}"),
     }
 
