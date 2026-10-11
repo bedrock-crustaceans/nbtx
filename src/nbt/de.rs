@@ -24,6 +24,8 @@
 //! [`crate::reflect`], shared with the other two codecs. See
 //! [`lenient_width`](crate::Attr::LenientWidth).
 
+use std::collections::HashSet;
+
 use byteorder::ReadBytesExt;
 use facet::Facet;
 use facet_core::{Def, ScalarType, Shape, Type, UserType};
@@ -368,7 +370,7 @@ fn read_map<'f, F: EndiannessImpl, R: ReadBytesExt>(
         return Err(unexpected_type(FieldType::Compound, tag));
     }
     io::check_depth(depth)?;
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let mut p = p.init_map().map_err(reflect_err)?;
     loop {
         let entry_tag = io::read_tag(r)?;
@@ -376,13 +378,12 @@ fn read_map<'f, F: EndiannessImpl, R: ReadBytesExt>(
             break;
         }
         let key = String::from_utf8(io::read_str_payload::<F, R>(r)?)?;
-        if seen.contains(&key) {
+        if !seen.insert(key.clone()) {
             // Duplicate key: keep the first, but still consume the payload so
             // the stream stays in sync.
             skip_value::<F, R>(r, entry_tag, depth + 1)?;
             continue;
         }
-        seen.push(key.clone());
         p = p.begin_key().map_err(reflect_err)?;
         p = p.set(key).map_err(reflect_err)?;
         p = p.end().map_err(reflect_err)?;
