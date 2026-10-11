@@ -177,7 +177,7 @@ fn write_scalar<F: EndiannessImpl, W: WriteBytesExt>(
             let s = peek
                 .as_str()
                 .ok_or_else(|| unsupported("expected a string value"))?;
-            io::write_str_payload::<F, W>(w, s.as_bytes())?;
+            io::write_string::<F, W>(w, s)?;
         }
         _ => {
             return Err(unsupported(
@@ -277,7 +277,7 @@ fn write_map<F: EndiannessImpl, W: WriteBytesExt>(
         let key_str = key
             .as_str()
             .ok_or_else(|| unsupported("map keys must be strings"))?;
-        io::write_str_payload::<F, W>(w, key_str.as_bytes())?;
+        io::write_string::<F, W>(w, key_str)?;
         write_payload::<F, W>(w, value, depth + 1)?;
     }
     w.write_u8(FieldType::End as u8)?;

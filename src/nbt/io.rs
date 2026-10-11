@@ -15,6 +15,7 @@ use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 use integer_encoding::{VarIntReader, VarIntWriter};
 
 use crate::error::{InvalidVarint, StringLengthExceeded, UnexpectedEnd};
+use crate::nbt::mutf8;
 use crate::{EndiannessImpl, Error, FieldType, MAX_STRING_LEN, Value, Variant};
 
 /// Upper bound, in bytes, on how much capacity we speculatively reserve from an
@@ -304,6 +305,27 @@ pub(crate) fn read_str_payload<F: EndiannessImpl, R: ReadBytesExt>(
 ) -> Result<Vec<u8>, Error> {
     let len = read_str_len::<F, R>(r)? as usize;
     read_exact_bounded(r, len)
+}
+
+/// Reads a `String`-tag payload as text: Java's modified UTF-8 for the
+/// big-endian variant, plain UTF-8 otherwise.
+pub(crate) fn read_string<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Result<String, Error> {
+    let bytes = read_str_payload::<F, R>(r)?;
+    Ok(match F::AS_ENUM {
+        Variant::BigEndian => mutf8::decode(bytes)?,
+        Variant::LittleEndian | Variant::VarintEndian => String::from_utf8(bytes)?,
+    })
+}
+
+/// Writes text as a `String`-tag payload, the mirror of [`read_string`].
+pub(crate) fn write_string<F: EndiannessImpl, W: WriteBytesExt>(
+    w: &mut W,
+    s: &str,
+) -> Result<(), Error> {
+    match F::AS_ENUM {
+        Variant::BigEndian => write_str_payload::<F, W>(w, &mutf8::encode(s)),
+        Variant::LittleEndian | Variant::VarintEndian => write_str_payload::<F, W>(w, s.as_bytes()),
+    }
 }
 
 /// Reads a single tag byte and converts it to a [`FieldType`].

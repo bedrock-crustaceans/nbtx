@@ -273,11 +273,10 @@ fn read_scalar<'f, F: EndiannessImpl, R: ReadBytesExt>(
         }
         ScalarType::Str | ScalarType::String | ScalarType::CowStr => {
             expect!(String);
-            let bytes = io::read_str_payload::<F, R>(r)?;
-            // A concrete `String`/`&str` field validates plain UTF-8 and errors
-            // otherwise; an NBT string that is not valid UTF-8 needs a
-            // `bstr::BString` field or `Value`.
-            p.set(String::from_utf8(bytes)?).map_err(reflect_err)
+            // A concrete `String`/`&str` field validates UTF-8 (modified UTF-8
+            // for big-endian) and errors otherwise; an NBT string that is not
+            // valid text needs a `bstr::BString` field or `Value`.
+            p.set(io::read_string::<F, R>(r)?).map_err(reflect_err)
         }
         _ => Err(unsupported(
             "deserialization of this scalar type is not supported",
@@ -377,7 +376,7 @@ fn read_map<'f, F: EndiannessImpl, R: ReadBytesExt>(
         if entry_tag == FieldType::End {
             break;
         }
-        let key = String::from_utf8(io::read_str_payload::<F, R>(r)?)?;
+        let key = io::read_string::<F, R>(r)?;
         if !seen.insert(key.clone()) {
             // Duplicate key: keep the first, but still consume the payload so
             // the stream stays in sync.
