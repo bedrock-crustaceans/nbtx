@@ -347,3 +347,24 @@ fn a_lookalike_named_struct_is_not_treated_as_a_root_name() {
     assert_eq!(&real_bytes[3..14], b"hello world");
     assert_ne!(bytes, real_bytes);
 }
+
+#[test]
+fn a_lone_tag_end_root_reads_as_the_default_when_asked() {
+    let compound: Compound = nbtx::from_varint_bytes_or_default(&mut [0u8].as_slice()).unwrap();
+    assert!(compound.is_empty());
+
+    let compound: Compound = nbtx::from_le_bytes_or_default(&mut [0u8].as_slice()).unwrap();
+    assert!(compound.is_empty());
+
+    let named: Compound =
+        nbtx::from_be_bytes_or_default(&mut hex("0a 0000 00").as_slice()).unwrap();
+    assert!(named.is_empty());
+}
+
+#[test]
+fn a_lone_tag_end_root_is_still_an_error_by_default() {
+    assert!(matches!(
+        nbtx::from_le_bytes::<Compound>(&mut [0u8].as_slice()),
+        Err(nbtx::Error::UnexpectedEnd(_))
+    ));
+}

@@ -477,6 +477,25 @@ pub fn from_bytes<'f, F: EndiannessImpl, T: Facet<'f>>(
             index: None,
         }));
     }
+    read_root::<F, T>(root_tag, reader)
+}
+
+/// Like [`from_bytes`], but a lone `TAG_End` root decodes as `T::default()`.
+///
+/// Bedrock peers send a single `0x00` for an empty NBT field.
+pub fn from_bytes_or_default<'f, F: EndiannessImpl, T: Facet<'f> + Default>(
+    reader: &mut impl ReadBytesExt,
+) -> Result<T, Error> {
+    match io::read_tag(reader)? {
+        FieldType::End => Ok(T::default()),
+        root_tag => read_root::<F, T>(root_tag, reader),
+    }
+}
+
+fn read_root<'f, F: EndiannessImpl, T: Facet<'f>>(
+    root_tag: FieldType,
+    reader: &mut impl ReadBytesExt,
+) -> Result<T, Error> {
     let root_name = io::read_str_payload::<F, _>(reader)?;
 
     let shape = <T as Facet>::SHAPE;
@@ -510,6 +529,33 @@ macro_rules! endian_fn {
         }
     };
 }
+
+macro_rules! endian_or_default_fn {
+    ($from:ident, $endian:ty, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $from<'f, T: Facet<'f> + Default>(
+            reader: &mut impl ReadBytesExt,
+        ) -> Result<T, Error> {
+            from_bytes_or_default::<$endian, T>(reader)
+        }
+    };
+}
+
+endian_or_default_fn!(
+    from_be_bytes_or_default,
+    BigEndian,
+    "[`from_be_bytes`], reading a lone `TAG_End` root as `T::default()`."
+);
+endian_or_default_fn!(
+    from_le_bytes_or_default,
+    LittleEndian,
+    "[`from_le_bytes`], reading a lone `TAG_End` root as `T::default()`."
+);
+endian_or_default_fn!(
+    from_varint_bytes_or_default,
+    VarintEndian,
+    "[`from_varint_bytes`], reading a lone `TAG_End` root as `T::default()`."
+);
 
 endian_fn!(
     from_be_bytes,

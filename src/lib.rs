@@ -296,7 +296,10 @@ pub(crate) fn has_nbtx_attr(shape: &facet_core::Shape, key: &str) -> bool {
 pub use crate::convert::{from_value, to_value};
 
 #[cfg(feature = "nbt")]
-pub use crate::nbt::de::{from_be_bytes, from_bytes, from_le_bytes, from_varint_bytes};
+pub use crate::nbt::de::{
+    from_be_bytes, from_be_bytes_or_default, from_bytes, from_bytes_or_default, from_le_bytes,
+    from_le_bytes_or_default, from_varint_bytes, from_varint_bytes_or_default,
+};
 #[cfg(feature = "nbt")]
 pub use crate::nbt::ser::{
     Serializer, to_be_bytes, to_be_bytes_in, to_bytes, to_bytes_in, to_le_bytes, to_le_bytes_in,
