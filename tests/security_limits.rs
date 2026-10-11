@@ -2,12 +2,12 @@
 //!
 //! Three bounds, each with a technical reason for its value:
 //!
-//! * [`nbtx::MAX_DEPTH`] (512 nested containers) — the decoders and encoders are
+//! * [`nbtx::MAX_DEPTH`] (128 nested containers) — the decoders and encoders are
 //!   recursive, and a Rust stack overflow **aborts the process** (SIGABRT)
 //!   rather than unwinding into a catchable error. Without a bound, a few
-//!   kilobytes of nested `TAG_List`s kill any process that parses them. 512 is
-//!   far past anything a real document needs while leaving the recursion
-//!   comfortably inside a default 2 MiB thread stack.
+//!   kilobytes of nested `TAG_List`s kill any process that parses them. 128 is
+//!   far past anything a real document needs while keeping the recursion inside
+//!   a 1 MiB stack even unoptimised (`tests/small_stack.rs`).
 //! * [`nbtx::MAX_STRING_LEN`] (32767 = `i16::MAX`) — the big/little-endian
 //!   variants prefix strings with a `u16`, so a longer string cannot be
 //!   represented; writing one would wrap the prefix and emit a stream that
@@ -304,7 +304,7 @@ fn compound_key_far_over_max_len_is_rejected() {
 /// 2000 nested compounds, little-endian. Runs on an **ordinary** libtest thread
 /// deliberately: the `Value` path is the one that matters for untrusted input,
 /// so it must fit the 2 MiB std default even in an unoptimised build. Measured,
-/// it peaks at ~1.15 MB at the 512-container bound. Only the derived-struct
+/// it peaks at about 0.3 MB at the 128-container bound. Only the derived-struct
 /// reflection path needs an oversized thread; see
 /// [`deep_nesting_is_rejected_for_derived_structs`].
 #[test]
@@ -424,8 +424,8 @@ fn deep_nesting_is_rejected_on_encode() {
 /// comfortably within any default stack), but roughly 6 KB in an unoptimised
 /// one, where LLVM gives every temporary in a function its own never-reused
 /// slot. `cargo test` builds unoptimised, and libtest's threads get the 2 MiB
-/// std default, which the derived-struct path alone would exhaust before
-/// reaching 512. The `Value` path — the one that matters for untrusted input,
+/// std default, which the derived-struct path alone used to exhaust before
+/// reaching the old 512 bound. The `Value` path — the one that matters for untrusted input,
 /// since decoding unknown data into a derived recursive type is a much narrower
 /// scenario — is an order of magnitude cheaper and is covered above on a plain
 /// test thread.

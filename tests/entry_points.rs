@@ -365,7 +365,7 @@ fn a_named_field_is_an_ordinary_compound() {
 /// actually enforces.
 #[test]
 fn the_public_limit_constants_match_what_is_enforced() {
-    assert_eq!(nbtx::MAX_DEPTH, 512);
+    assert_eq!(nbtx::MAX_DEPTH, 128);
     assert_eq!(nbtx::MAX_STRING_LEN, i16::MAX as usize);
 
     // A string of exactly the constant encodes; one byte more does not.

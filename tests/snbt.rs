@@ -248,28 +248,29 @@ fn deep_alternating_nesting_is_rejected_on_parse() {
     );
 }
 
-/// The bound is exactly `MAX_DEPTH` containers: 512 nested compounds parse, 513
-/// do not. Guards against the limit silently drifting (or being made so tight
+/// The bound is exactly `MAX_DEPTH` containers: that many nested compounds
+/// parse, one more does not. Guards against the limit silently drifting (or being made so tight
 /// that legitimate documents break).
 ///
-/// Runs on an explicitly-sized thread. Not because 512 frames do not fit in the
+/// Runs on an explicitly-sized thread. Not because `MAX_DEPTH` frames do not fit in the
 /// 2 MiB std default — they do, at ~2.8 KB per level unoptimised, the same order
 /// as the binary `Value` path — but because this test walks *right up to* the
 /// bound with no margin at all, and libtest's default is exactly that 2 MiB. The
 /// rejection tests above hold the real guarantee and run on ordinary test
 /// threads.
 #[test]
-fn max_depth_boundary_is_512_containers() {
+fn max_depth_boundary_is_max_depth_containers() {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
-            let at_limit = format!("{}1{}", "{a:".repeat(512), "}".repeat(512));
+            let depth = nbtx::MAX_DEPTH;
+            let at_limit = format!("{}1{}", "{a:".repeat(depth), "}".repeat(depth));
             let ok: Result<Value, _> = from_string(&at_limit);
-            assert!(ok.is_ok(), "512 nested compounds must parse: {ok:?}");
+            assert!(ok.is_ok(), "{depth} nested compounds must parse: {ok:?}");
 
-            let over = format!("{}1{}", "{a:".repeat(513), "}".repeat(513));
+            let over = format!("{}1{}", "{a:".repeat(depth + 1), "}".repeat(depth + 1));
             let res: Result<Value, _> = from_string(&over);
-            let err = res.expect_err("513 nested compounds must be refused");
+            let err = res.expect_err("one compound past MAX_DEPTH must be refused");
             assert!(
                 matches!(err, nbtx::Error::MaxDepthExceeded(_)),
                 "expected MaxDepthExceeded, got {err:?}"

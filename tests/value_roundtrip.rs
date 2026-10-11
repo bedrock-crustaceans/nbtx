@@ -217,7 +217,7 @@ fn varint_boundary_values() {
 #[test]
 fn deeply_nested_and_large_array_roundtrip() {
     let mut deep = Value::Byte(1);
-    for _ in 0..128 {
+    for _ in 0..nbtx::MAX_DEPTH - 2 {
         deep = Value::Compound(Compound::from([("n".into(), deep)]));
     }
     let large = Value::IntArray((0..50_000).collect());

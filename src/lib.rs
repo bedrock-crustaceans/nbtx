@@ -48,11 +48,14 @@ pub use crate::variant::{EndiannessImpl, Variant, VarintEndian};
 /// encode or decode before giving up with [`Error::MaxDepthExceeded`].
 ///
 /// The codecs are recursive, and a few kilobytes of nested `TAG_List` bytes
-/// would otherwise drive them into a stack overflow — which in Rust aborts the
-/// whole process rather than raising a catchable error. 512 is far past anything
-/// a real document needs, while leaving the recursion comfortably inside a
-/// default thread stack even in an unoptimised build.
-pub const MAX_DEPTH: usize = 512;
+/// would otherwise drive them into a stack overflow, which in Rust aborts the
+/// whole process rather than raising a catchable error. 128 is far past anything
+/// a real Bedrock document needs and fits a 1 MiB stack (the Windows main
+/// thread) in an unoptimised build: a `Value` costs about 3 KB of stack per
+/// level there and about 1 KB optimised. A binary decode can raise or lower its
+/// own bound with [`DecodeOptions::max_depth`]; raise it only on a thread with
+/// stack to match.
+pub const MAX_DEPTH: usize = 128;
 
 /// Limits on one binary decode, passed to the `from_*_bytes_with` functions.
 ///
