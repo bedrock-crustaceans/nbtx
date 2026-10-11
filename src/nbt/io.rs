@@ -17,11 +17,18 @@ use integer_encoding::{VarIntReader, VarIntWriter};
 use crate::error::{InvalidVarint, StringTooLong, UnexpectedEnd};
 use crate::{EndiannessImpl, Error, FieldType, MAX_STRING_LEN, Value, Variant};
 
-/// Upper bound on how much capacity we speculatively reserve from an
+/// Upper bound, in bytes, on how much capacity we speculatively reserve from an
 /// attacker-controlled wire length before any bytes are actually read. The real
 /// allocation still grows to fit genuine data; this only caps the *initial*
 /// reservation so a bogus multi-gigabyte length can't OOM the process up front.
-const MAX_PREALLOC: usize = 4096;
+/// It is counted in bytes rather than elements because a `Value` is many bytes
+/// wide and nested lists each reserve their own buffer.
+const MAX_PREALLOC_BYTES: usize = 4096;
+
+/// How many `T`s to reserve for a wire length of `len`, within [`MAX_PREALLOC_BYTES`].
+fn prealloc<T>(len: usize) -> usize {
+    len.min(MAX_PREALLOC_BYTES / size_of::<T>().max(1))
+}
 
 /// Maximum number of bytes a 32-bit varint may occupy on the wire.
 ///
@@ -277,11 +284,11 @@ pub(crate) fn read_seq_len<F: EndiannessImpl, R: ReadBytesExt>(r: &mut R) -> Res
 /// Reads exactly `len` bytes without trusting `len` for the initial allocation.
 ///
 /// `len` comes straight off the wire, so we cap the up-front reservation at
-/// [`MAX_PREALLOC`] and let [`Read::read_to_end`] grow the buffer to fit the
+/// [`MAX_PREALLOC_BYTES`] and let [`Read::read_to_end`] grow the buffer to fit the
 /// bytes that are actually present. A truncated stream therefore yields fewer
 /// bytes than promised and surfaces as an [`Error::UnexpectedEof`].
 fn read_exact_bounded<R: ReadBytesExt>(r: &mut R, len: usize) -> Result<Vec<u8>, Error> {
-    let mut buf = Vec::with_capacity(len.min(MAX_PREALLOC));
+    let mut buf = Vec::with_capacity(prealloc::<u8>(len));
     let read = r.take(len as u64).read_to_end(&mut buf)?;
     if read != len {
         return Err(Error::from(std::io::Error::from(
@@ -444,7 +451,7 @@ pub(crate) fn read_value<F: EndiannessImpl, R: ReadBytesExt>(
             check_depth(depth)?;
             let elem = read_tag(r)?;
             let len = read_seq_len::<F, R>(r)? as usize;
-            let mut out = Vec::with_capacity(len.min(MAX_PREALLOC));
+            let mut out = Vec::with_capacity(prealloc::<Value>(len));
             for _ in 0..len {
                 out.push(read_value::<F, R>(r, elem, depth + 1)?);
             }
@@ -485,7 +492,7 @@ fn read_leaf_value<F: EndiannessImpl, R: ReadBytesExt>(
         FieldType::String => Value::String(bstr::BString::from(read_str_payload::<F, R>(r)?)),
         FieldType::IntArray => {
             let len = read_seq_len::<F, R>(r)? as usize;
-            let mut out = Vec::with_capacity(len.min(MAX_PREALLOC));
+            let mut out = Vec::with_capacity(prealloc::<i32>(len));
             for _ in 0..len {
                 out.push(read_i32::<F, R>(r)?);
             }
@@ -493,7 +500,7 @@ fn read_leaf_value<F: EndiannessImpl, R: ReadBytesExt>(
         }
         FieldType::LongArray => {
             let len = read_seq_len::<F, R>(r)? as usize;
-            let mut out = Vec::with_capacity(len.min(MAX_PREALLOC));
+            let mut out = Vec::with_capacity(prealloc::<i64>(len));
             for _ in 0..len {
                 out.push(read_i64::<F, R>(r)?);
             }
