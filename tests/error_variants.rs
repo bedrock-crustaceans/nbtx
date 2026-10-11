@@ -124,7 +124,7 @@ fn unknown_field_names_the_key_the_container_and_the_opt_out() {
     );
 }
 
-/// `StringTooLong` reports both the rejected length and the limit, so a caller
+/// `StringLengthExceeded` reports both the rejected length and the limit, so a caller
 /// can tell "slightly over" from "wildly corrupt".
 #[cfg(feature = "nbt")]
 #[test]
@@ -135,12 +135,12 @@ fn string_too_long_reports_the_length_and_the_limit() {
     )]);
     let err = to_be_bytes(&doc).expect_err("must reject");
     match err {
-        Error::StringTooLong(e) => {
+        Error::StringLengthExceeded(e) => {
             assert_eq!(e.len(), nbtx::MAX_STRING_LEN + 1);
             assert_eq!(e.max(), nbtx::MAX_STRING_LEN);
             assert!(!e.is_empty());
         }
-        other => panic!("expected StringTooLong, got {other:?}"),
+        other => panic!("expected StringLengthExceeded, got {other:?}"),
     }
 }
 
@@ -155,11 +155,11 @@ fn string_too_long_is_raised_on_the_varint_read_path() {
     let bytes = hex(concat!("0a00", "0801", "61", "808002"));
     let err = from_varint_bytes::<Value>(&mut bytes.as_slice()).expect_err("must reject");
     match err {
-        Error::StringTooLong(e) => {
+        Error::StringLengthExceeded(e) => {
             assert_eq!(e.len(), nbtx::MAX_STRING_LEN + 1);
             assert_eq!(e.max(), nbtx::MAX_STRING_LEN);
         }
-        other => panic!("expected StringTooLong, got {other:?}"),
+        other => panic!("expected StringLengthExceeded, got {other:?}"),
     }
 }
 

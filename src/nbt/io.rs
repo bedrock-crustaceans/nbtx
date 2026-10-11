@@ -14,7 +14,7 @@ use crate::value::Compound;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 use integer_encoding::{VarIntReader, VarIntWriter};
 
-use crate::error::{InvalidVarint, StringTooLong, UnexpectedEnd};
+use crate::error::{InvalidVarint, StringLengthExceeded, UnexpectedEnd};
 use crate::{EndiannessImpl, Error, FieldType, MAX_STRING_LEN, Value, Variant};
 
 /// Upper bound, in bytes, on how much capacity we speculatively reserve from an
@@ -58,7 +58,7 @@ fn invalid_varint(max_bytes: usize) -> Error {
 }
 
 fn string_too_long(len: usize) -> Error {
-    Error::StringTooLong(StringTooLong {
+    Error::StringLengthExceeded(StringLengthExceeded {
         len,
         max: MAX_STRING_LEN,
         #[cfg(feature = "error-context")]

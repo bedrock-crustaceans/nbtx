@@ -258,13 +258,16 @@ fn oversized_string_never_silently_corrupts_the_stream() {
     );
 }
 
-/// The rejection is the specific `Error::StringTooLong`, and everything at or
+/// The rejection is the specific `Error::StringLengthExceeded`, and everything at or
 /// below the limit still encodes — the guard must not be off by one.
 #[test]
 fn oversized_string_is_refused_and_max_len_still_encodes() {
     let value = compound([("s", Value::String(BString::from(vec![b'a'; 70_000])))]);
     let err = to_be_bytes(&value).expect_err("a 70000-byte string must be refused");
-    assert!(matches!(err, nbtx::Error::StringTooLong(_)), "got {err:?}");
+    assert!(
+        matches!(err, nbtx::Error::StringLengthExceeded(_)),
+        "got {err:?}"
+    );
 
     let ok = BString::from(vec![b'a'; nbtx::MAX_STRING_LEN]);
     let value = compound([("s", Value::String(ok.clone()))]);

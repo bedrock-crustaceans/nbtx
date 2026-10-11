@@ -336,13 +336,13 @@ impl InvalidVarint {
 #[derive(Error, Debug, Clone)]
 #[cfg_attr(
     feature = "error-context",
-    error("NBT string of {len} bytes exceeds the maximum of {max} at `{at}`")
+    error("NBT string of {len} bytes exceeds the {max}-byte limit at `{at}`")
 )]
 #[cfg_attr(
     not(feature = "error-context"),
-    error("NBT string of {len} bytes exceeds the maximum of {max}")
+    error("NBT string of {len} bytes exceeds the {max}-byte limit")
 )]
-pub struct StringTooLong {
+pub struct StringLengthExceeded {
     /// The length that was rejected.
     pub(crate) len: usize,
     /// The maximum permitted length.
@@ -359,7 +359,7 @@ pub struct StringTooLong {
 }
 
 #[cfg(feature = "nbt")]
-impl StringTooLong {
+impl StringLengthExceeded {
     /// The length that was rejected.
     #[inline]
     pub fn len(&self) -> usize {
@@ -796,7 +796,7 @@ pub enum Error {
     /// An NBT string exceeded [`MAX_STRING_LEN`](crate::MAX_STRING_LEN) bytes.
     #[cfg(feature = "nbt")]
     #[error(transparent)]
-    StringTooLong(StringTooLong),
+    StringLengthExceeded(StringLengthExceeded),
     /// A compound key had no matching struct field.
     ///
     /// Raised by every codec (binary, SNBT and [`from_value`](crate::from_value)).

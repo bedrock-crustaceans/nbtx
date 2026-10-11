@@ -188,7 +188,7 @@ fn detail(err: &Error) -> Option<String> {
             format!("key {:?} on struct `{}`", e.field(), e.container())
         }
         Error::MaxDepthExceeded(e) => format!("limit was {} containers", e.max()),
-        Error::StringTooLong(e) => format!("{} bytes, limit {}", e.len(), e.max()),
+        Error::StringLengthExceeded(e) => format!("{} bytes, limit {}", e.len(), e.max()),
         Error::InvalidVarint(e) => format!("gave up after {} bytes", e.max_bytes()),
         Error::TypeOutOfRange(e) => format!("tag byte {:#04x}", e.found()),
         Error::HeterogeneousList { expected, found } => {
@@ -230,7 +230,7 @@ fn variant_name(err: &Error) -> &'static str {
         Error::UnexpectedEof(_) => "Error::UnexpectedEof",
         Error::MaxDepthExceeded(_) => "Error::MaxDepthExceeded",
         Error::InvalidVarint(_) => "Error::InvalidVarint",
-        Error::StringTooLong(_) => "Error::StringTooLong",
+        Error::StringLengthExceeded(_) => "Error::StringLengthExceeded",
         Error::UnknownField(_) => "Error::UnknownField",
         Error::MissingVariantAs(_) => "Error::MissingVariantAs",
         Error::DiscriminantOutOfRange(_) => "Error::DiscriminantOutOfRange",
